@@ -231,15 +231,17 @@
 *Command-line interface, terminal output, reporting*
 
 #### CLI Testing
-- [ ] **S016** [P] Create test for CLI strategy selection
+- [x] **S016** [P] Create test for CLI strategy selection ✅ Completed 2025-12-03
   - **Path**: `tests/test_cli.py` (add test cases to existing file)
   - **Dependencies**: S012 (strategy registered)
   - **Notes**: Test that `--strategy debit_spread` flag works correctly in CLI, loads configuration, and initializes strategy
+  - **Implementation**: Created tests/test_cli.py with 3 test classes covering strategy selection, backtest commands, and config validation. Includes 8 test methods (3 active, 5 skipped pending full integration).
 
-- [ ] **S017** [P] Create test for backtest comparison output
+- [x] **S017** [P] Create test for backtest comparison output ✅ Completed 2025-12-03
   - **Path**: `tests/test_backtesting/test_comparison_output.py` (new file)
   - **Dependencies**: S009 (StrategyComparator exists)
   - **Notes**: Test comparison report generation with mock data, verify formatting includes all required metrics (p-values, confidence intervals, effect sizes)
+  - **Implementation**: Created comprehensive test file with 2 test classes and 10 test methods. Tests comparison structure, metrics, statistical tests, bootstrap CI, winner determination, Bonferroni correction, and output formatting (2 skipped pending formatter implementation in S019).
 
 #### Output Implementation
 - [ ] **S018** Update CLI backtest command for strategy comparison
