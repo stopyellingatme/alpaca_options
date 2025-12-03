@@ -187,11 +187,15 @@ class BacktestResult:
 class SlippageModel:
     """Models realistic slippage for backtesting.
 
-    Incorporates:
-    - Bid-ask spread crossing (you pay the spread)
-    - Volatility impact (higher IV = worse fills)
-    - Size impact (larger orders get worse fills)
-    - Time of day effects (wider spreads at open/close)
+    Supported models:
+    - "orats": ORATS research-based slippage (recommended for options)
+        * 75% of bid-ask spread for single-leg positions
+        * 65% of bid-ask spread for two-leg spreads (verticals, debits, credits)
+        * 56% of bid-ask spread for four-leg spreads (iron condors)
+    - "realistic": Complex model incorporating spread, volatility, size, and noise
+    - "percentage": Fixed percentage of notional value
+    - "fixed": Fixed dollar amount per contract
+    - "volatility": Percentage scaled by implied volatility
     """
 
     def __init__(
@@ -210,6 +214,7 @@ class SlippageModel:
         volatility: Optional[float] = None,
         bid: Optional[float] = None,
         ask: Optional[float] = None,
+        num_legs: Optional[int] = None,
     ) -> float:
         """Calculate slippage for an order.
 
@@ -220,11 +225,30 @@ class SlippageModel:
             volatility: Optional implied volatility.
             bid: Bid price for spread-based calculation.
             ask: Ask price for spread-based calculation.
+            num_legs: Number of legs in the strategy (for ORATS model).
 
         Returns:
             Slippage amount (always positive, represents cost).
         """
-        if self._model_type == "realistic" and bid is not None and ask is not None:
+        if self._model_type == "orats" and bid is not None and ask is not None:
+            # ORATS slippage methodology based on strategy complexity
+            # Research shows slippage decreases with more legs (better pricing)
+            spread = ask - bid
+
+            # Determine slippage percentage based on leg count
+            if num_legs == 1:
+                slippage_pct = 0.75  # 75% of spread for single legs
+            elif num_legs == 2:
+                slippage_pct = 0.65  # 65% of spread for two-leg spreads
+            elif num_legs == 4:
+                slippage_pct = 0.56  # 56% of spread for iron condors
+            else:
+                slippage_pct = 0.65  # Default to two-leg percentage
+
+            slippage_per_contract = spread * slippage_pct
+            return abs(slippage_per_contract * quantity * 100)
+
+        elif self._model_type == "realistic" and bid is not None and ask is not None:
             # Realistic model: you cross a portion of the spread + additional slippage
             spread = ask - bid
             mid = (bid + ask) / 2
@@ -630,6 +654,7 @@ class BacktestEngine:
                 volatility=contract.implied_volatility,
                 bid=contract.bid,
                 ask=contract.ask,
+                num_legs=len(signal.legs),  # Pass number of legs for ORATS model
             )
 
             # Adjust price for slippage (worse for us)

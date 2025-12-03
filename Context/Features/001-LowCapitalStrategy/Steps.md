@@ -187,7 +187,7 @@
     ```
   - **Implementation**: Added DebitSpreadStrategy import at line 282 and added to strategy_class list at line 287 for registration in the TradingEngine.
 
-- [ ] **S013** Enhance BacktestEngine with ORATS slippage model
+- [x] **S013** Enhance BacktestEngine with ORATS slippage model ✅ Completed 2025-12-03
   - **Path**: `src/alpaca_options/backtesting/engine.py` (modify slippage calculation method)
   - **Dependencies**: S011 (slippage tests written)
   - **Notes**: Replace existing percentage-based slippage with ORATS methodology from Tech.md lines 236-242:
@@ -195,8 +195,9 @@
     - Apply appropriate slippage percentage (75%, 65%, 56%)
     - Calculate slippage from bid-ask spread width
     - Update execution simulation to use new model
+  - **Implementation**: Added "orats" model type to SlippageModel class with leg-count-based slippage percentages (75%/65%/56%). Updated calculate() method to accept num_legs parameter and modified the call site to pass len(signal.legs). Updated docstring to document ORATS methodology.
 
-- [ ] **S014** [P] Add portfolio Greeks tracking to backtest results
+- [ ] **S014** [P] Add portfolio Greeks tracking to backtest results (DEFERRED)
   - **Path**: `src/alpaca_options/backtesting/engine.py` (add Greeks aggregation to results)
   - **Dependencies**: S007 (strategy generates positions with Greeks)
   - **Notes**: Enhance backtest results to include portfolio-level Greeks tracking:
@@ -204,8 +205,9 @@
     - Track Greeks evolution over time (daily snapshots)
     - Validate against risk constraints (|Delta| < 0.30, |Gamma| < 0.20)
     - Reference existing utils/greeks.py for calculations
+  - **Status**: Deferred as optional enhancement. Core functionality complete without this.
 
-- [ ] **S015** Validate risk management integration
+- [x] **S015** Validate risk management integration ✅ Completed 2025-12-03
   - **Path**: Review `src/alpaca_options/risk/manager.py` behavior with debit spreads
   - **Dependencies**: S007, S012 (strategy implemented and registered)
   - **Notes**: Verify RiskManager correctly handles debit spread positions:
@@ -214,6 +216,13 @@
     - Position sizing respects max_allocation_percent from config
     - Portfolio Greeks constraints enforced
     - No code changes expected - validation task only
+  - **Validation Results**:
+    ✅ Signal type detection: Correctly identifies "buy_call_spread" and "buy_put_spread" (manager.py:460-467)
+    ✅ Risk calculation: Properly calculates net debit and spread width risk (manager.py:478-506)
+    ✅ DTE validation: Validates min/max DTE for all legs (manager.py:573-608)
+    ✅ Greeks constraints: Portfolio-level Delta, Gamma, Vega, Theta limits enforced (manager.py:326-389)
+    ✅ Position sizing: Respects max_single_position_percent configuration (manager.py:401-425)
+    ✅ Conclusion: No code changes required. RiskManager fully compatible with debit spreads.
 
 **🏁 MILESTONE: Service Integration Complete**
 *Use Task tool with commit-changes agent to commit: "Integrate debit spread strategy with engine and enhance backtesting"*
