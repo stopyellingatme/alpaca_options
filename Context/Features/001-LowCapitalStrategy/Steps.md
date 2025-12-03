@@ -63,7 +63,7 @@
 *Models, data structures, and business logic foundation*
 
 #### Test-First Implementation
-- [ ] **S004** [P] Create test file for DebitSpreadStrategy
+- [x] **S004** [P] Create test file for DebitSpreadStrategy ✅ Completed 2025-12-03
   - **Path**: `tests/test_strategies/test_debit_spread.py` (new file)
   - **Dependencies**: S001 (config must exist)
   - **Notes**: Create comprehensive test cases covering:
@@ -75,8 +75,9 @@
     - Signal generation for bear put spreads (bearish direction)
     - Signal metadata structure validation (profit_target, stop_loss, close_dte)
     - Integration with StrategyCriteria (IV rank, DTE range, liquidity)
+  - **Implementation**: Created comprehensive test file with 15 test cases covering all required functionality. Includes fixtures for bullish/bearish/neutral market data and option chains for both bull call and bear put spreads.
 
-- [ ] **S005** [P] Create test file for RegimeClassifier utility
+- [x] **S005** [P] Create test file for RegimeClassifier utility ✅ Completed 2025-12-03
   - **Path**: `tests/test_utils/test_regime_classifier.py` (new file)
   - **Dependencies**: None
   - **Notes**: Test VIX-based regime classification logic:
@@ -86,8 +87,9 @@
     - High volatility: VIX > 30
     - Regime performance analysis functionality
     - ANOVA test for returns across regimes (scipy.stats.f_oneway)
+  - **Implementation**: Created comprehensive test file with 4 test classes and 15+ test methods. Tests regime classification, statistics, performance analysis, ANOVA integration, and full workflow scenarios.
 
-- [ ] **S006** [P] Create test file for StrategyComparator utility
+- [x] **S006** [P] Create test file for StrategyComparator utility ✅ Completed 2025-12-03
   - **Path**: `tests/test_utils/test_strategy_comparator.py` (new file)
   - **Dependencies**: None
   - **Notes**: Test statistical comparison methods:
@@ -96,9 +98,10 @@
     - Cohen's d effect size calculation
     - Multiple comparison correction (Bonferroni, FDR)
     - Comprehensive metrics calculation (Sharpe, profit factor, capital efficiency)
+  - **Implementation**: Created comprehensive test file with 4 test classes and 20+ test methods. Tests metric calculations (Sharpe, profit factor, max drawdown, capital efficiency), statistical tests (Cohen's d, bootstrap CI, Mann-Whitney U), strategy comparison workflow, and edge cases.
 
 #### Strategy Implementation
-- [ ] **S007** Implement DebitSpreadStrategy class
+- [x] **S007** Implement DebitSpreadStrategy class ✅ Completed 2025-12-03
   - **Path**: `src/alpaca_options/strategies/debit_spread.py` (new file ~300-400 lines)
   - **Dependencies**: S004 (tests written), S001 (config exists)
   - **Notes**: Follow VerticalSpreadStrategy pattern from Tech.md lines 456-464:
@@ -110,8 +113,15 @@
     - Include comprehensive signal metadata as specified in Tech.md lines 508-528
     - Implement delta filtering, DTE validation, risk/reward checks
   - **Implementation Pattern**: Reference existing `src/alpaca_options/strategies/vertical_spread.py` for established patterns
+  - **Implementation**: Created complete DebitSpreadStrategy class (470 lines) with:
+    - RSI-based direction determination (oversold=bullish, overbought=bearish)
+    - Delta selection: long legs 60-70 delta (ITM), short legs 30-40 delta (OTM)
+    - Bull call spread and bear put spread builders
+    - Risk/reward validation (max debit 60% of width, min debit $30)
+    - Position management (50% profit target, 200% stop loss, close at 21 DTE)
+    - Comprehensive signal metadata for backtesting
 
-- [ ] **S008** [P] Implement RegimeClassifier utility
+- [x] **S008** [P] Implement RegimeClassifier utility ✅ Completed 2025-12-03
   - **Path**: `src/alpaca_options/utils/regime_classifier.py` (new file ~100-150 lines)
   - **Dependencies**: S005 (tests written)
   - **Notes**: Implement VIX-based regime classification as specified in Tech.md lines 331-375:
@@ -119,8 +129,13 @@
     - `analyze_regime_performance(df: pd.DataFrame) -> Dict` method
     - ANOVA test integration for statistical regime comparison
     - Optional: HMM-based regime detection for future enhancement (can defer)
+  - **Implementation**: Created RegimeClassifier utility (190 lines) with:
+    - MarketRegime enum (LOW_VOLATILITY, NORMAL, ELEVATED, HIGH_VOLATILITY)
+    - classify_regime() function with VIX thresholds (<15, 15-20, 20-30, >=30)
+    - RegimeClassifier class with classify_series() and get_regime_statistics() methods
+    - analyze_regime_performance() function with ANOVA test integration using scipy.stats.f_oneway
 
-- [ ] **S009** [P] Implement StrategyComparator utility
+- [x] **S009** [P] Implement StrategyComparator utility ✅ Completed 2025-12-03
   - **Path**: `src/alpaca_options/utils/strategy_comparator.py` (new file ~200-250 lines)
   - **Dependencies**: S006 (tests written)
   - **Notes**: Implement statistical comparison as specified in Tech.md lines 280-324:
@@ -130,6 +145,11 @@
     - Effect size calculation (Cohen's d)
     - Multiple comparison correction (Bonferroni method)
     - Use scipy.stats for all statistical operations (already in dependencies)
+  - **Implementation**: Created StrategyComparator utility (410 lines) with:
+    - Metric calculation functions (Sharpe ratio, profit factor, max drawdown, capital efficiency)
+    - Statistical test functions (Cohen's d, bootstrap CI with configurable samples)
+    - StrategyComparator class with calculate_all_metrics() method
+    - compare_strategies() function with Mann-Whitney U test, effect size interpretation, bootstrap CIs, Bonferroni correction, and winner determination
 
 **🏁 MILESTONE: Strategy Implementation Complete**
 *Use Task tool with commit-changes agent to commit: "Implement debit spread strategy and statistical utilities"*
