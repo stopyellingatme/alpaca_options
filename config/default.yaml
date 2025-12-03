@@ -1,0 +1,277 @@
+# Alpaca Options Trading Bot - Default Configuration
+# Copy this file and modify for your environment
+
+app:
+  name: "Alpaca Options Bot"
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  timezone: "America/New_York"
+  data_dir: "./data"
+
+# Alpaca API Configuration
+# Set credentials via environment variables:
+#   ALPACA_API_KEY
+#   ALPACA_SECRET_KEY
+alpaca:
+  paper: true  # Use paper trading (recommended for testing)
+  data_feed: "iex"  # "iex" (free) or "sip" (paid, more accurate)
+  base_url: null  # Override base URL if needed
+
+# Trading Configuration
+trading:
+  enabled: true
+  max_positions: 10
+  max_concurrent_positions: 3  # Max positions open at same time (realistic for small account)
+  max_order_value: 5000
+  max_trading_capital: 5000  # Cap on capital to use for testing (null = use full account)
+  trading_hours_only: true
+  order_timeout_seconds: 30
+  default_order_type: "limit"
+  limit_price_buffer: 0.02  # 2% buffer on limit orders
+  min_buying_power_reserve: 0.20  # Keep 20% cash as reserve
+
+# Risk Management
+risk:
+  # Portfolio-level Greeks limits
+  max_portfolio_delta: 100
+  max_portfolio_gamma: 20
+  max_portfolio_vega: 200
+  min_portfolio_theta: -100  # Max negative theta
+
+  # Drawdown protection
+  max_drawdown_percent: 20
+  daily_loss_limit: 500  # $500 daily loss limit
+
+  # Position sizing
+  max_single_position_percent: 25  # 25% of portfolio per trade
+  max_contracts_per_trade: 2  # Up to 2 contracts at a time
+
+  # Options-specific
+  min_days_to_expiry: 7  # Don't hold options expiring sooner
+  max_days_to_expiry: 60
+  min_open_interest: 100
+  max_bid_ask_spread_percent: 5
+
+# Capital Tier Configuration
+# Strategies are automatically enabled/disabled based on account capital
+capital_tiers:
+  micro:
+    min_capital: 0
+    max_capital: 2000
+    description: "Account too small for most options strategies"
+    enabled_strategies: []
+
+  low:
+    min_capital: 2000
+    max_capital: 10000
+    description: "Suitable for defined-risk spread strategies"
+    enabled_strategies:
+      - vertical_spread
+
+  medium:
+    min_capital: 10000
+    max_capital: 50000
+    description: "Can trade most spread strategies"
+    enabled_strategies:
+      - vertical_spread
+      - iron_condor
+
+  high:
+    min_capital: 50000
+    max_capital: 100000
+    description: "Full access to all strategies including wheel"
+    enabled_strategies:
+      - vertical_spread
+      - iron_condor
+      - wheel
+      - cash_secured_put
+
+  premium:
+    min_capital: 100000
+    max_capital: 999999999
+    description: "Premium account with full diversification"
+    enabled_strategies:
+      - vertical_spread
+      - iron_condor
+      - wheel
+      - cash_secured_put
+      - covered_call
+
+# Strategy Configuration
+strategies:
+  # Wheel Strategy (CSP + CC)
+  # Capital Tier: HIGH ($50,000+)
+  # Must be able to buy 100 shares if assigned
+  wheel:
+    enabled: true
+    allocation: 0.4  # 40% of buying power
+    capital_requirements:
+      min_capital: 50000
+      recommended_capital: 100000
+      max_allocation_percent: 40
+    config:
+      underlyings:
+        - "AAPL"
+        - "MSFT"
+        - "GOOGL"
+        - "AMZN"
+      delta_target: 0.30
+      min_premium: 50  # Minimum premium per contract
+      min_dte: 21
+      max_dte: 45
+      min_iv_rank: 20
+
+  # Iron Condor Strategy
+  # Capital Tier: MEDIUM ($10,000+)
+  # Requires margin for both put and call spreads
+  iron_condor:
+    enabled: true
+    allocation: 0.3
+    capital_requirements:
+      min_capital: 10000
+      recommended_capital: 25000
+      max_allocation_percent: 25
+    config:
+      underlyings:
+        - "SPY"
+        - "QQQ"
+        - "IWM"
+      wing_width: 5
+      delta_target: 0.16
+      min_dte: 21
+      max_dte: 45
+      min_iv_rank: 20
+      min_credit: 50
+      max_spread_percent: 5.0
+      min_open_interest: 100
+
+  # Vertical Spread Strategy
+  # Capital Tier: LOW ($2,000+)
+  # Best for small accounts - limited max loss
+  # Optimized based on research: 20 delta, 30-45 DTE, profit/stop management
+  vertical_spread:
+    enabled: true
+    allocation: 0.3
+    capital_requirements:
+      min_capital: 2000
+      recommended_capital: 5000
+      max_allocation_percent: 30
+    config:
+      underlyings:
+        - "QQQ"
+        - "SPY"
+      spread_width: 5
+      delta_target: 0.20  # 20 delta = ~80% probability OTM
+      min_credit: 30
+      min_dte: 30  # Enter with 30+ DTE
+      max_dte: 45
+      close_dte: 21  # Close at 21 DTE to avoid gamma risk
+      min_iv_rank: 30  # Only sell when IV is elevated
+      max_spread_percent: 5.0
+      min_open_interest: 100
+      prefer_credit: true
+      rsi_oversold: 45  # Widened for more opportunities (was 40)
+      rsi_overbought: 55  # Widened for more opportunities (was 60)
+      # Profit/Loss management
+      profit_target_pct: 0.50  # Close at 50% of max profit
+      stop_loss_multiplier: 2.0  # Close at 2x credit received (loss)
+      min_return_on_risk: 0.25  # Credit should be 1/4 of spread width (more opportunities)
+
+  # Cash Secured Put
+  # Capital Tier: MEDIUM ($25,000+)
+  # Requires cash to cover potential assignment
+  cash_secured_put:
+    enabled: false
+    allocation: 0.0
+    capital_requirements:
+      min_capital: 25000
+      recommended_capital: 50000
+      max_allocation_percent: 30
+    config:
+      underlyings: []
+      delta_target: 0.25
+      min_premium: 50
+      min_dte: 21
+      max_dte: 45
+
+  # Covered Call
+  # Capital Tier: MEDIUM ($25,000+)
+  # Requires owning 100 shares of underlying
+  covered_call:
+    enabled: false
+    allocation: 0.0
+    capital_requirements:
+      min_capital: 25000
+      recommended_capital: 50000
+      max_allocation_percent: 40
+    config:
+      delta_target: 0.30
+      min_premium: 25
+      min_dte: 14
+      max_dte: 30
+
+# Backtesting Configuration
+backtesting:
+  default_start_date: "2023-01-01"
+  default_end_date: "2024-01-01"
+  initial_capital: 5000  # Starting capital
+
+  execution:
+    slippage_model: "realistic"  # realistic (recommended), percentage, fixed, volatility
+    slippage_value: 0.02  # Base slippage for percentage/fixed models
+    commission_per_contract: 0.65
+    # Realistic model parameters (used when slippage_model: "realistic")
+    gap_risk_probability: 0.015  # 1.5% daily chance of adverse gap
+    gap_severity_min: 0.20  # Gaps move position 20-50% against you
+    gap_severity_max: 0.50
+    early_assignment_threshold: 0.90  # ITM > 90% triggers assignment risk
+    liquidity_rejection_rate: 0.05  # 5% of trades rejected for liquidity
+
+  data:
+    underlying_timeframe: "1h"
+    options_snapshot_interval: "15min"
+    use_adjusted_prices: true
+    cache_enabled: true
+    cache_dir: "./data/historical"
+
+# Terminal UI Configuration
+ui:
+  refresh_rate: 1.0  # seconds between updates
+  show_greeks: true
+  show_performance: true
+  log_lines: 10
+  theme: "default"  # default, dark, light
+
+  # Panel visibility
+  panels:
+    positions: true
+    orders: true
+    strategies: true
+    greeks: true
+    performance: true
+    logs: true
+
+# Logging Configuration
+logging:
+  console_level: "INFO"
+  file_level: "DEBUG"
+  log_file: "./data/logs/trading.log"
+  max_file_size_mb: 10
+  backup_count: 5
+
+# Notifications (optional)
+notifications:
+  enabled: false
+
+  # Discord webhook
+  discord:
+    enabled: false
+    webhook_url: ""
+
+  # Email notifications
+  email:
+    enabled: false
+    smtp_server: ""
+    smtp_port: 587
+    username: ""
+    password: ""
+    to_address: ""
