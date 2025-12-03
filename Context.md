@@ -55,7 +55,8 @@ alpaca_options/
 │   │   └── manager.py            # Risk checks, position sizing
 │   ├── strategies/               # Trading strategies
 │   │   ├── base.py               # BaseStrategy ABC
-│   │   ├── vertical_spread.py    # Credit spreads (LOW tier)
+│   │   ├── debit_spread.py       # Debit spreads (LOW tier, $1.5k+)
+│   │   ├── vertical_spread.py    # Credit spreads (LOW tier, $2k+)
 │   │   ├── iron_condor.py        # Iron condors (MEDIUM tier)
 │   │   └── wheel.py              # Wheel strategy (HIGH tier)
 │   ├── screener/                 # Market screening

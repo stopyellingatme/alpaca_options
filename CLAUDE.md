@@ -8,7 +8,7 @@ An intelligent, automated options trading system that identifies and executes hi
 
 ## Overview
 
-This trading bot is designed to automate options trading with a focus on **credit spread strategies** that benefit from time decay (theta). The system:
+This trading bot is designed to automate options trading with multiple strategies including **credit spreads** (theta decay) and **debit spreads** (directional plays with lower capital requirements). The system:
 
 1. **Screens for Opportunities** - Uses technical indicators (RSI, moving averages) and options metrics (IV rank, liquidity) to identify favorable setups
 2. **Selects Appropriate Strategies** - Automatically enables strategies based on your account capital tier
@@ -28,6 +28,23 @@ This trading bot is designed to automate options trading with a focus on **credi
   - Stop loss: Close at 2x credit received
   - DTE exit: Close at 21 DTE to avoid gamma risk
 - **Risk/Reward**: Credit should be ~25% of spread width (e.g., $125 credit on $500 risk)
+
+### Debit Spreads (LOW Tier - $1.5k+)
+**Bull Call Spreads** and **Bear Put Spreads** - Directional strategies optimized for lower capital accounts.
+
+- **Capital Advantage**: 60-80% less capital required vs credit spreads ($50-$250 vs $500 collateral)
+- **Entry Criteria**:
+  - Buy 60-70 delta (ITM/near-money), Sell 30-40 delta (OTM)
+  - 30-45 DTE, IV rank > 20 (lower threshold than credit spreads)
+  - RSI-based direction: ≤45 = oversold = bullish (buy call spread), ≥55 = overbought = bearish (buy put spread)
+  - Max debit capped at 60% of spread width
+  - Minimum debit $30 to ensure meaningful profit potential
+- **Exit Rules**:
+  - Profit target: Close at 50% of max profit
+  - Stop loss: Close at 200% of debit paid (2x initial cost)
+  - DTE exit: Close at 21 DTE to avoid gamma risk
+- **Risk/Reward**: Better than credit spreads (150% potential return vs 25%)
+- **Best For**: Traders with $1,500-$5,000 accounts who want directional exposure without high capital requirements
 
 ### Iron Condors (MEDIUM Tier - $10k+)
 Neutral strategy selling both put and call spreads simultaneously.
@@ -49,8 +66,8 @@ The system automatically enables strategies based on your account equity:
 
 | Tier | Capital Range | Available Strategies | Description |
 |------|--------------|---------------------|-------------|
-| **MICRO** | $0-$2k | None | Account too small for options |
-| **LOW** | $2k-$10k | Vertical Spreads | Defined-risk spreads only |
+| **MICRO** | $0-$1.5k | None | Account too small for options |
+| **LOW** | $1.5k-$10k | Debit Spreads, Vertical Spreads | Low-capital directional + credit spreads |
 | **MEDIUM** | $10k-$50k | + Iron Condors | Add neutral strategies |
 | **HIGH** | $50k-$100k | + Wheel, CSP | Full strategy access |
 | **PREMIUM** | $100k+ | All + Diversification | Multi-strategy portfolio |
@@ -96,8 +113,11 @@ uv run alpaca-options --help
 # Run the bot (paper trading)
 uv run alpaca-options run --paper
 
-# Run a backtest
+# Run a backtest (credit spreads)
 uv run alpaca-options backtest --strategy vertical_spread --symbol QQQ --capital 5000
+
+# Run a backtest (debit spreads - lower capital requirement)
+uv run alpaca-options backtest --strategy debit_spread --symbol QQQ --capital 2000
 
 # Run paper trading script directly
 uv run python scripts/run_paper_trading.py
