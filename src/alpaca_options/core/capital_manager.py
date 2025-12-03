@@ -41,6 +41,14 @@ class StrategyCapitalRequirements:
 
 # Default capital requirements for each strategy
 STRATEGY_CAPITAL_REQUIREMENTS: dict[str, StrategyCapitalRequirements] = {
+    "debit_spread": StrategyCapitalRequirements(
+        strategy_name="debit_spread",
+        min_capital=1500,
+        recommended_capital=3000,
+        max_allocation_percent=40,
+        tier=CapitalTier.LOW,
+        description="Lower capital than credit spreads ($50-$250 vs $500). Better risk/reward (150% vs 25%). Best in low IV.",
+    ),
     "vertical_spread": StrategyCapitalRequirements(
         strategy_name="vertical_spread",
         min_capital=2000,
@@ -158,10 +166,10 @@ class CapitalManager:
         # Recommendations by tier (in priority order)
         recommendations: dict[CapitalTier, list[str]] = {
             CapitalTier.MICRO: [],  # Not enough capital for options trading
-            CapitalTier.LOW: ["vertical_spread"],
-            CapitalTier.MEDIUM: ["vertical_spread", "iron_condor"],
-            CapitalTier.HIGH: ["vertical_spread", "iron_condor", "wheel", "cash_secured_put"],
-            CapitalTier.PREMIUM: ["wheel", "iron_condor", "vertical_spread", "cash_secured_put", "covered_call"],
+            CapitalTier.LOW: ["debit_spread", "vertical_spread"],
+            CapitalTier.MEDIUM: ["vertical_spread", "iron_condor", "debit_spread"],
+            CapitalTier.HIGH: ["vertical_spread", "iron_condor", "wheel", "cash_secured_put", "debit_spread"],
+            CapitalTier.PREMIUM: ["wheel", "iron_condor", "vertical_spread", "cash_secured_put", "covered_call", "debit_spread"],
         }
 
         return recommendations.get(tier, [])
@@ -224,11 +232,13 @@ class CapitalManager:
         # Allocation weights by tier
         allocation_weights: dict[CapitalTier, dict[str, float]] = {
             CapitalTier.LOW: {
-                "vertical_spread": 1.0,
+                "debit_spread": 0.5,
+                "vertical_spread": 0.5,
             },
             CapitalTier.MEDIUM: {
-                "vertical_spread": 0.5,
-                "iron_condor": 0.5,
+                "vertical_spread": 0.4,
+                "iron_condor": 0.4,
+                "debit_spread": 0.2,
             },
             CapitalTier.HIGH: {
                 "vertical_spread": 0.3,

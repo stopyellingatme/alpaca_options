@@ -66,6 +66,7 @@ capital_tiers:
     description: "Suitable for defined-risk spread strategies"
     enabled_strategies:
       - vertical_spread
+      - debit_spread
 
   medium:
     min_capital: 10000
@@ -175,6 +176,51 @@ strategies:
       profit_target_pct: 0.50  # Close at 50% of max profit
       stop_loss_multiplier: 2.0  # Close at 2x credit received (loss)
       min_return_on_risk: 0.25  # Credit should be 1/4 of spread width (more opportunities)
+
+  # Debit Spread Strategy (Bull Call / Bear Put)
+  # Capital Tier: LOW ($1,500+)
+  # Lower capital requirement than credit spreads ($50-$250 vs $500)
+  # Better risk/reward: 150% profit potential vs 25% for credit spreads
+  # Best in low IV environments where buying options is cheaper
+  debit_spread:
+    enabled: true
+    allocation: 0.3  # 30% of capital for debit spreads
+    capital_requirements:
+      min_capital: 1500  # $1,500 minimum
+      recommended_capital: 3000
+      max_allocation_percent: 40
+    config:
+      underlyings:
+        - "QQQ"
+        - "SPY"
+
+      # Delta selection (buying vs selling strikes)
+      long_delta_min: 0.60  # Buy 60-70 delta (ITM or near-money)
+      long_delta_max: 0.70
+      short_delta_min: 0.30  # Sell 30-40 delta (OTM)
+      short_delta_max: 0.40
+
+      # Entry criteria
+      min_dte: 30  # 30-45 DTE for time decay management
+      max_dte: 45
+      min_iv_rank: 20  # Lower than credit spreads (better in low IV)
+
+      # Technical filters (RSI-based direction)
+      rsi_oversold: 45  # Below 45 = bullish signal (buy call spread)
+      rsi_overbought: 55  # Above 55 = bearish signal (buy put spread)
+
+      # Risk/reward filters
+      max_debit_to_width_ratio: 0.60  # Max 60% of spread width as cost
+      min_debit: 30  # Minimum $30 debit ($0.30 x 100)
+
+      # Liquidity requirements
+      max_spread_percent: 5.0  # Max 5% bid-ask spread
+      min_open_interest: 100
+
+      # Position management
+      profit_target_pct: 0.50  # Close at 50% of max profit
+      stop_loss_pct: 2.0  # Close at 200% of debit paid (loss)
+      close_dte: 21  # Close when <= 21 DTE to avoid gamma risk
 
   # Cash Secured Put
   # Capital Tier: MEDIUM ($25,000+)
