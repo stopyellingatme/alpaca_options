@@ -658,7 +658,13 @@ class BacktestEngine:
             )
 
             # Adjust price for slippage (worse for us)
-            exec_price = base_price + (slippage / (leg.quantity * 100))
+            # Buy orders: pay more (add slippage)
+            # Sell orders: receive less (subtract slippage)
+            slippage_per_contract = slippage / (leg.quantity * 100)
+            if is_buy:
+                exec_price = base_price + slippage_per_contract
+            else:
+                exec_price = base_price - slippage_per_contract
             entry_prices[leg.contract_symbol] = exec_price
 
             # Calculate premium
@@ -891,6 +897,7 @@ class BacktestEngine:
         total_pnl = 0.0
         total_commission = 0.0
 
+        total_slippage = 0.0
         for leg in trade.legs:
             # Find current price
             current_price = 0.0
@@ -898,9 +905,28 @@ class BacktestEngine:
                 for contract in chain.contracts:
                     if contract.symbol == leg.contract_symbol:
                         is_buy_to_close = leg.side == "sell"
-                        current_price = (
+                        base_price = (
                             contract.ask if is_buy_to_close else contract.bid
                         )
+
+                        # Apply slippage for closing trade
+                        slippage = self._slippage_model.calculate(
+                            price=base_price,
+                            quantity=leg.quantity,
+                            is_buy=is_buy_to_close,
+                            volatility=contract.implied_volatility,
+                            bid=contract.bid,
+                            ask=contract.ask,
+                            num_legs=len(trade.legs),
+                        )
+                        total_slippage += slippage
+
+                        # Adjust price for slippage (worse for us)
+                        slippage_per_contract = slippage / (leg.quantity * 100)
+                        if is_buy_to_close:
+                            current_price = base_price + slippage_per_contract
+                        else:
+                            current_price = base_price - slippage_per_contract
                         break
 
             exit_prices[leg.contract_symbol] = current_price
@@ -929,6 +955,7 @@ class BacktestEngine:
         trade.status = status
         trade.pnl = total_pnl
         trade.commissions += total_commission
+        trade.slippage += total_slippage  # Add exit slippage to entry slippage
 
         # Update cash
         self._cash += total_pnl - total_commission

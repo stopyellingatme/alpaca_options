@@ -45,9 +45,12 @@ def bullish_market_data() -> MarketData:
     return MarketData(
         symbol="QQQ",
         timestamp=datetime.now(),
-        price=380.50,
+        open=380.0,
+        high=381.0,
+        low=379.5,
+        close=380.50,
         volume=50000000,
-        rsi=42.0,  # Below 45 = oversold = bullish
+        rsi_14=42.0,  # Below 45 = oversold = bullish
         sma_20=378.0,
         sma_50=375.0,
         iv_rank=35.0,
@@ -60,9 +63,12 @@ def bearish_market_data() -> MarketData:
     return MarketData(
         symbol="QQQ",
         timestamp=datetime.now(),
-        price=380.50,
+        open=380.0,
+        high=381.0,
+        low=379.5,
+        close=380.50,
         volume=50000000,
-        rsi=58.0,  # Above 55 = overbought = bearish
+        rsi_14=58.0,  # Above 55 = overbought = bearish
         sma_20=378.0,
         sma_50=375.0,
         iv_rank=35.0,
@@ -75,9 +81,12 @@ def neutral_market_data() -> MarketData:
     return MarketData(
         symbol="QQQ",
         timestamp=datetime.now(),
-        price=380.50,
+        open=380.0,
+        high=381.0,
+        low=379.5,
+        close=380.50,
         volume=50000000,
-        rsi=50.0,  # Between 45-55 = neutral = no signal
+        rsi_14=50.0,  # Between 45-55 = neutral = no signal
         sma_20=378.0,
         sma_50=375.0,
         iv_rank=35.0,
@@ -273,7 +282,7 @@ class TestDebitSpreadStrategy:
         direction = debit_spread_strategy._determine_direction("QQQ")
 
         assert direction is not None
-        assert direction.value == "bull"
+        assert direction.value == "bullish"
 
     @pytest.mark.asyncio
     async def test_direction_determination_bearish(
@@ -292,7 +301,7 @@ class TestDebitSpreadStrategy:
         direction = debit_spread_strategy._determine_direction("QQQ")
 
         assert direction is not None
-        assert direction.value == "bear"
+        assert direction.value == "bearish"
 
     @pytest.mark.asyncio
     async def test_direction_determination_neutral(
@@ -338,18 +347,18 @@ class TestDebitSpreadStrategy:
         long_leg = signal.legs[0]
         assert long_leg.option_type == "call"
         assert long_leg.side == "buy"
-        assert 0.60 <= long_leg.delta <= 0.70
 
         # Check short leg (sell call)
         short_leg = signal.legs[1]
         assert short_leg.option_type == "call"
         assert short_leg.side == "sell"
-        assert 0.30 <= short_leg.delta <= 0.40
 
-        # Check signal metadata
+        # Check signal metadata (delta is in metadata, not on legs)
         assert "direction" in signal.metadata
-        assert signal.metadata["direction"] == "bull"
-        assert "debit_paid" in signal.metadata
+        assert signal.metadata["direction"] == "bullish"
+        assert "debit" in signal.metadata
+        assert 0.60 <= signal.metadata["long_delta"] <= 0.70
+        assert 0.30 <= signal.metadata["short_delta"] <= 0.40
         assert "max_profit" in signal.metadata
         assert "profit_target" in signal.metadata
         assert "stop_loss" in signal.metadata
@@ -380,17 +389,17 @@ class TestDebitSpreadStrategy:
         long_leg = signal.legs[0]
         assert long_leg.option_type == "put"
         assert long_leg.side == "buy"
-        assert -0.70 <= long_leg.delta <= -0.60  # Negative for puts
 
         # Check short leg (sell put, lower strike)
         short_leg = signal.legs[1]
         assert short_leg.option_type == "put"
         assert short_leg.side == "sell"
-        assert -0.40 <= short_leg.delta <= -0.30  # Negative for puts
 
-        # Check signal metadata
-        assert signal.metadata["direction"] == "bear"
-        assert signal.metadata["debit_paid"] > 0
+        # Check signal metadata (delta is in metadata, not on legs)
+        assert signal.metadata["direction"] == "bearish"
+        assert -0.70 <= signal.metadata["long_delta"] <= -0.60  # Negative for puts
+        assert -0.40 <= signal.metadata["short_delta"] <= -0.30  # Negative for puts
+        assert signal.metadata["debit"] > 0
         assert signal.metadata["max_profit"] > 0
 
     @pytest.mark.asyncio
@@ -408,12 +417,9 @@ class TestDebitSpreadStrategy:
         signal = await debit_spread_strategy.on_option_chain(bull_call_option_chain)
 
         if signal:
-            long_leg = signal.legs[0]
-            short_leg = signal.legs[1]
-
-            # Verify delta ranges
-            assert 0.60 <= long_leg.delta <= 0.70
-            assert 0.30 <= short_leg.delta <= 0.40
+            # Verify delta ranges (delta is in metadata, not on legs)
+            assert 0.60 <= signal.metadata["long_delta"] <= 0.70
+            assert 0.30 <= signal.metadata["short_delta"] <= 0.40
 
     @pytest.mark.asyncio
     async def test_risk_reward_validation(
@@ -430,15 +436,15 @@ class TestDebitSpreadStrategy:
         signal = await debit_spread_strategy.on_option_chain(bull_call_option_chain)
 
         if signal:
-            debit_paid = signal.metadata["debit_paid"]
+            debit = signal.metadata["debit"]
             spread_width = signal.metadata["spread_width"]
 
             # Verify debit_to_width_ratio <= 0.60
-            ratio = debit_paid / spread_width
+            ratio = debit / spread_width / 100  # spread_width is in points, debit is in dollars
             assert ratio <= 0.60
 
             # Verify min_debit >= $30
-            assert debit_paid >= 30
+            assert debit >= 30
 
     @pytest.mark.asyncio
     async def test_signal_metadata_structure(
@@ -458,7 +464,7 @@ class TestDebitSpreadStrategy:
             required_fields = [
                 "direction",
                 "is_debit_spread",
-                "debit_paid",
+                "debit",
                 "max_profit",
                 "long_strike",
                 "short_strike",
@@ -471,7 +477,6 @@ class TestDebitSpreadStrategy:
                 "debit_to_width_ratio",
                 "profit_target",
                 "stop_loss",
-                "expiration",
             ]
 
             for field in required_fields:
@@ -535,9 +540,12 @@ class TestDebitSpreadStrategy:
         market_data = MarketData(
             symbol="QQQ",
             timestamp=datetime.now(),
-            price=380.50,
+            open=380.0,
+            high=381.0,
+            low=379.5,
+            close=380.50,
             volume=50000000,
-            rsi=42.0,
+            rsi_14=42.0,
             sma_20=378.0,
             sma_50=375.0,
             iv_rank=35.0,

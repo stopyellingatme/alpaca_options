@@ -158,48 +158,48 @@ class TestSlippageIntegration:
 
     def test_slippage_affects_trade_profitability(self) -> None:
         """Test that slippage reduces profitability for winning trades."""
-        # Debit spread entry
-        entry_debit_ideal = 5.00
+        # Debit spread entry (buying the spread)
+        entry_cost_ideal = 5.00
         entry_slippage = 0.40  # 65% of spread
-        entry_debit_actual = entry_debit_ideal + entry_slippage
+        entry_cost_actual = entry_cost_ideal + entry_slippage  # Pay MORE to enter
 
-        # Debit spread exit (close for profit)
-        exit_debit_ideal = 2.50  # Closes for less than entry = profit
+        # Debit spread exit (selling the spread back for MORE than entry = profit)
+        exit_proceeds_ideal = 7.50  # Sell spread for more than we paid
         exit_slippage = 0.30
-        exit_debit_actual = exit_debit_ideal + exit_slippage
+        exit_proceeds_actual = exit_proceeds_ideal - exit_slippage  # Receive LESS when exiting
 
-        # Profit without slippage
-        profit_ideal = (entry_debit_ideal - exit_debit_ideal) * 100
-        # Profit with slippage
-        profit_actual = (entry_debit_actual - exit_debit_actual) * 100
+        # Profit without slippage: paid 5.00, sold for 7.50, profit = 2.50
+        profit_ideal = (exit_proceeds_ideal - entry_cost_ideal) * 100
+        # Profit with slippage: paid 5.40, sold for 7.20, profit = 1.80 (less profit)
+        profit_actual = (exit_proceeds_actual - entry_cost_actual) * 100
 
         # Slippage should reduce profit
         assert profit_actual < profit_ideal
-        # Difference should be (entry_slippage - exit_slippage) * 100
+        # Difference should be (entry_slippage + exit_slippage) * 100
         profit_difference = profit_ideal - profit_actual
-        assert pytest.approx(profit_difference, abs=0.1) == 10.0  # (0.40 - 0.30) * 100
+        assert pytest.approx(profit_difference, abs=0.1) == 70.0  # (0.40 + 0.30) * 100
 
     def test_slippage_increases_losses(self) -> None:
         """Test that slippage increases losses for losing trades."""
-        # Debit spread entry
-        entry_debit_ideal = 5.00
+        # Debit spread entry (buying the spread)
+        entry_cost_ideal = 5.00
         entry_slippage = 0.40
-        entry_debit_actual = entry_debit_ideal + entry_slippage
+        entry_cost_actual = entry_cost_ideal + entry_slippage  # Pay MORE to enter
 
-        # Debit spread exit (close for loss)
-        exit_debit_ideal = 8.00  # Closes for more than entry = loss
+        # Debit spread exit (selling the spread back for LESS than entry = loss)
+        exit_proceeds_ideal = 2.00  # Sell spread for less than we paid = loss
         exit_slippage = 0.50
-        exit_debit_actual = exit_debit_ideal + exit_slippage
+        exit_proceeds_actual = exit_proceeds_ideal - exit_slippage  # Receive LESS when exiting
 
-        # Loss without slippage
-        loss_ideal = (exit_debit_ideal - entry_debit_ideal) * 100
-        # Loss with slippage
-        loss_actual = (exit_debit_actual - entry_debit_actual) * 100
+        # Loss without slippage: paid 5.00, sold for 2.00, loss = -3.00
+        loss_ideal = (exit_proceeds_ideal - entry_cost_ideal) * 100  # Negative = loss
+        # Loss with slippage: paid 5.40, sold for 1.50, loss = -3.90 (bigger loss)
+        loss_actual = (exit_proceeds_actual - entry_cost_actual) * 100
 
-        # Slippage should increase loss
-        assert loss_actual > loss_ideal
+        # Slippage should increase the magnitude of the loss
+        assert loss_actual < loss_ideal  # More negative = worse
         # Difference should be (exit_slippage + entry_slippage) * 100
-        loss_difference = loss_actual - loss_ideal
+        loss_difference = loss_ideal - loss_actual
         assert pytest.approx(loss_difference, abs=0.1) == 90.0  # (0.40 + 0.50) * 100
 
     def test_commissions_separate_from_slippage(self) -> None:

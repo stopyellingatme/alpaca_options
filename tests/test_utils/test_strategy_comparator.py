@@ -128,15 +128,15 @@ class TestStatisticalTests:
 
     def test_cohens_d_interpretation(self) -> None:
         """Test Cohen's d effect size interpretation."""
-        # Small effect (d ~ 0.2)
-        group_a_small = np.array([10.0, 10.2, 10.1, 10.3])
-        group_b_small = np.array([10.0, 10.0, 10.1, 10.1])
+        # Small effect (d ~ 0.2-0.4): large variance, small mean difference
+        group_a_small = np.array([8.0, 12.0, 9.5, 11.5, 10.0, 10.5, 9.0, 11.0])
+        group_b_small = np.array([7.5, 11.5, 9.0, 11.0, 9.5, 10.0, 8.5, 10.5])
         d_small = cohens_d(group_a_small, group_b_small)
         assert abs(d_small) < 0.5  # Small effect
 
-        # Large effect (d ~ 0.8+)
-        group_a_large = np.array([15, 16, 17, 18])
-        group_b_large = np.array([10, 11, 12, 13])
+        # Large effect (d ~ 1.0+): small variance, large mean difference
+        group_a_large = np.array([20.0, 20.5, 19.5, 20.2, 19.8, 20.3, 19.7, 20.1])
+        group_b_large = np.array([10.0, 10.5, 9.5, 10.2, 9.8, 10.3, 9.7, 10.1])
         d_large = cohens_d(group_a_large, group_b_large)
         assert abs(d_large) > 0.8  # Large effect
 

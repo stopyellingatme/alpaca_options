@@ -72,7 +72,11 @@ class TestDebitSpreadStrategyRegistration:
         market_data = MarketData(
             symbol="QQQ",
             timestamp="2024-01-01T10:00:00",
+            open=399.0,
+            high=401.0,
+            low=398.5,
             close=400.0,
+            volume=50000000,
             rsi_14=40.0,
         )
         await strategy.on_market_data(market_data)
@@ -99,11 +103,14 @@ class TestDebitSpreadStrategyRegistration:
         market_data = MarketData(
             symbol="QQQ",
             timestamp="2024-01-01T10:00:00",
+            open=399.0,
+            high=401.0,
+            low=398.5,
             close=400.0,
+            volume=50000000,
             rsi_14=40.0,
             sma_20=395.0,
             sma_50=390.0,
-            volume=50000000,
             iv_rank=25.0,
         )
 
@@ -128,7 +135,11 @@ class TestDebitSpreadStrategyRegistration:
         market_data = MarketData(
             symbol="AAPL",  # Not in underlyings list
             timestamp="2024-01-01T10:00:00",
+            open=149.5,
+            high=150.5,
+            low=149.0,
             close=150.0,
+            volume=40000000,
             rsi_14=40.0,
         )
 
@@ -152,7 +163,11 @@ class TestDebitSpreadStrategyRegistration:
         market_data = MarketData(
             symbol="QQQ",
             timestamp="2024-01-01T10:00:00",
+            open=399.0,
+            high=401.0,
+            low=398.5,
             close=400.0,
+            volume=50000000,
             rsi_14=40.0,
             iv_rank=15.0,  # Below threshold
         )
@@ -209,9 +224,6 @@ class TestDebitSpreadStrategyRegistration:
                 gamma=0.05,
                 theta=-0.10,
                 vega=0.15,
-                days_to_expiry=35,
-                bid_size=10,
-                ask_size=10,
             )
         ]
 
