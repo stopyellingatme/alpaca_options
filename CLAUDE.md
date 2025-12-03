@@ -1,3 +1,7 @@
+# Project Development Context
+
+@Context.md
+
 # Alpaca Options Trading Bot
 
 An intelligent, automated options trading system that identifies and executes high-probability trades using the Alpaca API. The system combines technical analysis, options screening, and risk management to find optimal trade opportunities across multiple strategies tailored to different account sizes.
