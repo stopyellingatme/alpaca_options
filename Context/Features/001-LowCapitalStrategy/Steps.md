@@ -158,12 +158,13 @@
 *Business logic, API integration, data management*
 
 #### Integration Testing
-- [ ] **S010** [P] Create integration test for strategy registration
-  - **Path**: `tests/test_core/test_engine_integration.py` (add test case to existing file)
+- [x] **S010** [P] Create integration test for strategy registration ✅ Completed 2025-12-03
+  - **Path**: `tests/test_integration/test_engine_integration.py` (add test case to existing file)
   - **Dependencies**: S007 (DebitSpreadStrategy implemented)
   - **Notes**: Test that DebitSpreadStrategy loads correctly via engine's strategy registry, initializes with config, and can receive market data/option chains
+  - **Implementation**: Created comprehensive integration test file with 11 test cases covering strategy initialization, configuration, market data handling, IV rank filtering, cleanup, and option chain processing.
 
-- [ ] **S011** [P] Create backtest enhancement test
+- [x] **S011** [P] Create backtest enhancement test ✅ Completed 2025-12-03
   - **Path**: `tests/test_backtesting/test_slippage_model.py` (new file)
   - **Dependencies**: None
   - **Notes**: Test ORATS slippage methodology implementation:
@@ -171,9 +172,10 @@
     - Two-leg spreads (debit spreads): 65% of bid-ask spread
     - Four-leg spreads (iron condors): 56% of bid-ask spread
     - Verify slippage calculation integration in BacktestEngine
+  - **Implementation**: Created comprehensive slippage model test file with 2 test classes and 12 test methods covering all leg configurations, realistic spread scenarios, edge cases, and integration with backtest engine.
 
 #### Service Implementation
-- [ ] **S012** Register DebitSpreadStrategy in TradingEngine
+- [x] **S012** Register DebitSpreadStrategy in TradingEngine ✅ Completed 2025-12-03
   - **Path**: `src/alpaca_options/core/engine.py` (modify around line 282)
   - **Dependencies**: S007 (DebitSpreadStrategy class exists)
   - **Error Handling**: Follow existing pattern for strategy loading with try/except
@@ -183,6 +185,7 @@
     from alpaca_options.strategies.debit_spread import DebitSpreadStrategy
     # Add to registration loop
     ```
+  - **Implementation**: Added DebitSpreadStrategy import at line 282 and added to strategy_class list at line 287 for registration in the TradingEngine.
 
 - [ ] **S013** Enhance BacktestEngine with ORATS slippage model
   - **Path**: `src/alpaca_options/backtesting/engine.py` (modify slippage calculation method)

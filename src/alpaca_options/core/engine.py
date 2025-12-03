@@ -279,11 +279,12 @@ class TradingEngine:
     async def _initialize_strategies(self) -> None:
         """Initialize all enabled strategies from configuration."""
         # Register built-in strategies
+        from alpaca_options.strategies.debit_spread import DebitSpreadStrategy
         from alpaca_options.strategies.wheel import WheelStrategy
         from alpaca_options.strategies.vertical_spread import VerticalSpreadStrategy
         from alpaca_options.strategies.iron_condor import IronCondorStrategy
 
-        for strategy_class in [WheelStrategy, VerticalSpreadStrategy, IronCondorStrategy]:
+        for strategy_class in [DebitSpreadStrategy, WheelStrategy, VerticalSpreadStrategy, IronCondorStrategy]:
             try:
                 self.strategy_registry.register(strategy_class)
             except ValueError:
