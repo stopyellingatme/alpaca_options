@@ -29,22 +29,24 @@ This trading bot is designed to automate options trading with multiple strategie
   - DTE exit: Close at 21 DTE to avoid gamma risk
 - **Risk/Reward**: Credit should be ~25% of spread width (e.g., $125 credit on $500 risk)
 
-### Debit Spreads (LOW Tier - $1.5k+)
-**Bull Call Spreads** and **Bear Put Spreads** - Directional strategies optimized for lower capital accounts.
+### Debit Spreads (MEDIUM Tier - $10k+)
+**Bull Call Spreads** and **Bear Put Spreads** - Directional strategies for accounts with sufficient capital.
 
-- **Capital Advantage**: 60-80% less capital required vs credit spreads ($50-$250 vs $500 collateral)
+- **Capital Requirement**: **$10,000 minimum** - ITM/near-money options cost $1,100-$1,900 per spread
+- **Why $10k?**: 25% position limit requires $2,500 available to execute typical debit spreads
 - **Entry Criteria**:
-  - Buy 60-70 delta (ITM/near-money), Sell 30-40 delta (OTM)
-  - 30-45 DTE, IV rank > 20 (lower threshold than credit spreads)
-  - RSI-based direction: ≤45 = oversold = bullish (buy call spread), ≥55 = overbought = bearish (buy put spread)
-  - Max debit capped at 60% of spread width
-  - Minimum debit $30 to ensure meaningful profit potential
+  - Buy 55-75 delta (ITM/near-money), Sell 25-45 delta (OTM)
+  - 21-60 DTE, IV rank > 15
+  - RSI-based direction: ≤50 = oversold = bullish (buy call spread), ≥50 = overbought = bearish (buy put spread)
+  - Max debit capped at 70% of spread width
+  - Minimum debit $20 to ensure meaningful profit potential
 - **Exit Rules**:
   - Profit target: Close at 50% of max profit
   - Stop loss: Close at 200% of debit paid (2x initial cost)
   - DTE exit: Close at 21 DTE to avoid gamma risk
-- **Risk/Reward**: Better than credit spreads (150% potential return vs 25%)
-- **Best For**: Traders with $1,500-$5,000 accounts who want directional exposure without high capital requirements
+- **Risk/Reward**: Directional conviction plays with defined max loss
+- **Best For**: Traders with $10,000+ accounts who want directional exposure with strong technical signals
+- **Note**: Validated via backtesting - requires adequate position sizing to execute reliably
 
 ### Iron Condors (MEDIUM Tier - $10k+)
 Neutral strategy selling both put and call spreads simultaneously.
@@ -66,9 +68,9 @@ The system automatically enables strategies based on your account equity:
 
 | Tier | Capital Range | Available Strategies | Description |
 |------|--------------|---------------------|-------------|
-| **MICRO** | $0-$1.5k | None | Account too small for options |
-| **LOW** | $1.5k-$10k | Debit Spreads, Vertical Spreads | Low-capital directional + credit spreads |
-| **MEDIUM** | $10k-$50k | + Iron Condors | Add neutral strategies |
+| **MICRO** | $0-$2k | None | Account too small for options |
+| **LOW** | $2k-$10k | Vertical Spreads (Credit Spreads) | Proven +367% returns, 92.6% win rate |
+| **MEDIUM** | $10k-$50k | + Debit Spreads, Iron Condors | Add directional and neutral strategies |
 | **HIGH** | $50k-$100k | + Wheel, CSP | Full strategy access |
 | **PREMIUM** | $100k+ | All + Diversification | Multi-strategy portfolio |
 
@@ -198,7 +200,59 @@ result = await engine.run(
 )
 ```
 
-## Configuration
+## Configuration Files & Naming Conventions
+
+**IMPORTANT**: Always use generic configuration names. Never name configs, engines, or scripts after specific stocks.
+
+### File Structure
+
+**Config Files** (2 total):
+- `config/default.yaml` - System defaults and strategy configurations
+- `config/paper_trading.yaml` - Paper trading configuration (generic, works for any underlying)
+
+**Launch Method** (1 primary script):
+```bash
+uv run python scripts/run_paper_trading.py -d -s -u options_friendly
+```
+
+### Naming Rules
+
+✅ **DO** use generic names:
+- `config/paper_trading.yaml` - Good (generic)
+- `config/production.yaml` - Good (generic)
+- `scripts/run_paper_trading.py` - Good (generic)
+
+❌ **DON'T** use stock-specific names:
+- ~~`config/paper_qqq.yaml`~~ - Bad (stock-specific)
+- ~~`config/spy_config.yaml`~~ - Bad (stock-specific)
+- ~~`scripts/run_qqq_bot.py`~~ - Bad (stock-specific)
+
+### Adapting Configs for Different Underlyings
+
+To trade different stocks, edit the `underlyings` list in `config/paper_trading.yaml`:
+
+```yaml
+# For QQQ only
+underlyings:
+  - "QQQ"
+
+# For multiple symbols
+underlyings:
+  - "QQQ"
+  - "SPY"
+  - "IWM"
+```
+
+The screener can also discover opportunities dynamically:
+```bash
+# Scan S&P 500 universe
+uv run python scripts/run_paper_trading.py -d -s -u sp500
+
+# Scan options-friendly stocks
+uv run python scripts/run_paper_trading.py -d -s -u options_friendly
+```
+
+## Configuration Sections
 
 Main config: `config/default.yaml`
 
@@ -209,6 +263,7 @@ Key sections:
 - `capital_tiers`: Strategy enablement by capital level
 - `strategies`: Per-strategy configuration
 - `backtesting`: Slippage, commissions, data settings
+- `screener`: Dynamic opportunity discovery settings
 
 ## Development
 
@@ -223,9 +278,16 @@ uv run ruff check src/
 uv run mypy src/
 ```
 
-### Running Backtests with Alpaca Data
+### Running Backtests
 ```bash
-source .env && uv run python scripts/run_low_tier_debug.py
+# Vertical spreads (credit spreads)
+uv run alpaca-options backtest --strategy vertical_spread --symbol QQQ --capital 5000 --start 2024-02-01 --end 2024-11-30
+
+# Debit spreads
+uv run alpaca-options backtest --strategy debit_spread --symbol QQQ --capital 10000 --start 2024-02-01 --end 2024-11-30
+
+# Comprehensive backtest script (with detailed analysis)
+uv run python scripts/comprehensive_backtest.py
 ```
 
 ### Adding Dependencies

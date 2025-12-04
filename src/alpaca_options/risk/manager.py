@@ -494,33 +494,38 @@ class RiskManager:
         put_spread_risk = 0.0
         call_spread_risk = 0.0
 
-        # Put spread risk (short strike - long strike)
+        # Put spread risk (width is always |high strike - low strike|)
         if sell_puts and buy_puts:
-            max_short_strike = max(c.strike for _, c in sell_puts)
-            min_long_strike = min(c.strike for _, c in buy_puts)
-            put_width = max_short_strike - min_long_strike
+            # Get all put strikes (both long and short)
+            all_put_strikes = [c.strike for _, c in sell_puts] + [c.strike for _, c in buy_puts]
+            put_width = max(all_put_strikes) - min(all_put_strikes)
             if put_width > 0:
                 # Max quantity from the legs
-                qty = max(leg.quantity for leg, _ in sell_puts)
+                qty = max(leg.quantity for leg, _ in (sell_puts + buy_puts))
                 put_spread_risk = put_width * 100 * qty
 
-        # Call spread risk (long strike - short strike)
+        # Call spread risk (width is always |high strike - low strike|)
         if sell_calls and buy_calls:
-            min_short_strike = min(c.strike for _, c in sell_calls)
-            max_long_strike = max(c.strike for _, c in buy_calls)
-            call_width = max_long_strike - min_short_strike
+            # Get all call strikes (both long and short)
+            all_call_strikes = [c.strike for _, c in sell_calls] + [c.strike for _, c in buy_calls]
+            call_width = max(all_call_strikes) - min(all_call_strikes)
             if call_width > 0:
-                qty = max(leg.quantity for leg, _ in sell_calls)
+                qty = max(leg.quantity for leg, _ in (sell_calls + buy_calls))
                 call_spread_risk = call_width * 100 * qty
 
         # For iron condor, risk is max of put or call spread (not sum)
         # since both can't be in the money at once
         spread_width_risk = max(put_spread_risk, call_spread_risk)
 
-        # Max risk = spread width - net credit received
-        # If net_premium > 0 (credit), it reduces risk
-        # If net_premium < 0 (debit), it increases risk
-        max_risk = spread_width_risk - net_premium
+        # Max risk calculation differs for credit vs debit spreads
+        if net_premium < 0:
+            # DEBIT SPREAD: We paid to enter, max loss is the debit paid
+            # Example: Bull call spread costs $300 debit, max loss = $300
+            max_risk = abs(net_premium)
+        else:
+            # CREDIT SPREAD: We received premium, max loss is width minus credit
+            # Example: Bull put spread, $500 width, $125 credit → max loss = $375
+            max_risk = spread_width_risk - net_premium
 
         return max(0.0, max_risk)
 

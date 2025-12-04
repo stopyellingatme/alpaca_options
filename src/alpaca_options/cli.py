@@ -128,6 +128,7 @@ def backtest(
     from alpaca_options.backtesting import BacktestDataLoader, BacktestEngine
     from alpaca_options.core.config import load_config
     from alpaca_options.strategies import (
+        DebitSpreadStrategy,
         IronCondorStrategy,
         VerticalSpreadStrategy,
         WheelStrategy,
@@ -152,6 +153,7 @@ def backtest(
 
     # Create strategy instance
     strategy_map = {
+        "debit_spread": DebitSpreadStrategy,
         "wheel": WheelStrategy,
         "iron_condor": IronCondorStrategy,
         "vertical_spread": VerticalSpreadStrategy,
@@ -290,6 +292,7 @@ def strategies() -> None:
     from rich.table import Table
 
     from alpaca_options.strategies import (
+        DebitSpreadStrategy,
         IronCondorStrategy,
         VerticalSpreadStrategy,
         WheelStrategy,
@@ -299,7 +302,7 @@ def strategies() -> None:
     registry = get_registry()
 
     # Register built-in strategies
-    for strat_class in [WheelStrategy, IronCondorStrategy, VerticalSpreadStrategy]:
+    for strat_class in [DebitSpreadStrategy, WheelStrategy, IronCondorStrategy, VerticalSpreadStrategy]:
         try:
             registry.register(strat_class)
         except ValueError:

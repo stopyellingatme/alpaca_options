@@ -51,7 +51,7 @@ def check_prerequisites() -> bool:
         errors.append("ALPACA_SECRET_KEY environment variable not set")
 
     # Check config file exists
-    config_path = project_root / "config" / "paper_qqq.yaml"
+    config_path = project_root / "config" / "paper_trading.yaml"
     if not config_path.exists():
         errors.append(f"Config file not found: {config_path}")
 
@@ -101,9 +101,9 @@ def display_startup_info(screener_enabled: bool = False, universe: str = "option
         table.add_row("Underlying", "QQQ")
         table.add_row("RSI Thresholds", "40 (oversold) / 60 (overbought)")
 
-    table.add_row("Max Concurrent Positions", "2")
-    table.add_row("Max Contracts per Trade", "1")
-    table.add_row("Daily Loss Limit", "$250")
+    table.add_row("Max Concurrent Positions", "3")  # Updated to match validated config
+    table.add_row("Max Contracts per Trade", "2")  # Updated to match validated config
+    table.add_row("Daily Loss Limit", "$500")  # Updated to match validated config
 
     console.print(table)
     console.print()
@@ -115,7 +115,7 @@ async def run_paper_trading(screener_enabled: bool = False, universe: str = "opt
     from alpaca_options.core.engine import TradingEngine
 
     # Load configuration
-    config_path = project_root / "config" / "paper_qqq.yaml"
+    config_path = project_root / "config" / "paper_trading.yaml"
     settings = load_config(config_path)
 
     # Ensure paper trading mode
@@ -127,7 +127,7 @@ async def run_paper_trading(screener_enabled: bool = False, universe: str = "opt
         settings.screener.mode = "hybrid"
         settings.screener.universe = universe
         settings.screener.auto_refresh_seconds = 300  # 5 minute scans
-        settings.screener.min_combined_score = 50.0
+        settings.screener.min_combined_score = 60.0  # Match config
         console.print(f"[cyan]Screener enabled with {universe} universe[/cyan]")
 
     # Create engine
@@ -221,7 +221,7 @@ async def run_with_dashboard(screener_enabled: bool = False, universe: str = "op
     from alpaca_options.ui.dashboard import TradingDashboard
 
     # Load configuration
-    config_path = project_root / "config" / "paper_qqq.yaml"
+    config_path = project_root / "config" / "paper_trading.yaml"
     settings = load_config(config_path)
 
     # Ensure paper trading mode
@@ -231,9 +231,9 @@ async def run_with_dashboard(screener_enabled: bool = False, universe: str = "op
     if screener_enabled:
         settings.screener.enabled = True
         settings.screener.mode = "hybrid"
-        settings.screener.universe = universe
+        settings.screener.universe = universe  # Correct field name
         settings.screener.auto_refresh_seconds = 300  # 5 minute scans
-        settings.screener.min_combined_score = 50.0
+        settings.screener.min_combined_score = 60.0  # Match config (was 50.0)
         console.print(f"[cyan]Screener enabled with {universe} universe[/cyan]")
 
     # Create engine and dashboard

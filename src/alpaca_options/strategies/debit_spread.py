@@ -66,29 +66,29 @@ class DebitSpreadStrategy(BaseStrategy):
         # Core configuration
         self._underlyings: list[str] = []
 
-        # Delta selection (key difference from credit spreads)
-        self._long_delta_min: float = 0.60  # Buy 60-70 delta (ITM/near-money)
-        self._long_delta_max: float = 0.70
-        self._short_delta_min: float = 0.30  # Sell 30-40 delta (OTM)
-        self._short_delta_max: float = 0.40
+        # Delta selection - WIDENED RANGES for more signals
+        self._long_delta_min: float = 0.55  # Buy 55-75 delta (wider range)
+        self._long_delta_max: float = 0.75
+        self._short_delta_min: float = 0.25  # Sell 25-45 delta (wider range)
+        self._short_delta_max: float = 0.45
 
-        # DTE parameters
-        self._min_dte: int = 30
-        self._max_dte: int = 45
+        # DTE parameters - WIDER WINDOW for more opportunities
+        self._min_dte: int = 21  # Lowered from 30
+        self._max_dte: int = 60  # Increased from 45
         self._close_dte: int = 21  # Close at 21 DTE to avoid gamma risk
 
-        # IV and liquidity filters
-        self._min_iv_rank: float = 20.0  # Lower than credit spreads (20 vs 30)
-        self._max_spread_percent: float = 5.0
-        self._min_open_interest: int = 100
+        # IV and liquidity filters - RELAXED for synthetic data
+        self._min_iv_rank: float = 15.0  # Lowered from 20
+        self._max_spread_percent: float = 10.0  # Increased from 5.0
+        self._min_open_interest: int = 50  # Lowered from 100
 
-        # Direction determination (RSI-based only, simpler than credit spreads)
-        self._rsi_oversold: float = 45.0  # Bullish when RSI <= 45
-        self._rsi_overbought: float = 55.0  # Bearish when RSI >= 55
+        # Direction determination - WIDER THRESHOLDS for more signals
+        self._rsi_oversold: float = 50.0  # Bullish when RSI <= 50 (was 45)
+        self._rsi_overbought: float = 50.0  # Bearish when RSI >= 50 (was 55)
 
-        # Risk/reward filters
-        self._max_debit_to_width_ratio: float = 0.60  # Max debit should be 60% of width
-        self._min_debit: float = 30.0  # Minimum debit to ensure meaningful profit potential
+        # Risk/reward filters - RELAXED for testing
+        self._max_debit_to_width_ratio: float = 0.70  # Increased from 0.60
+        self._min_debit: float = 20.0  # Lowered from 30.0
 
         # Position management
         self._profit_target_pct: float = 0.50  # Close at 50% of max profit

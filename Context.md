@@ -73,7 +73,7 @@ alpaca_options/
 │   └── run_paper_trading.py      # Paper trading runner
 ├── config/                       # Configuration files
 │   ├── default.yaml              # Default configuration
-│   └── paper_qqq.yaml            # Paper trading config
+│   └── paper_trading.yaml         # Paper trading config
 ├── pyproject.toml                # Project configuration
 └── uv.lock                       # UV lock file
 ```
@@ -202,7 +202,7 @@ ALPACA_SECRET_KEY=your_secret
 
 **Project Configuration**:
 - `config/default.yaml` - Default trading configuration
-- `config/paper_qqq.yaml` - Paper trading configuration for QQQ
+- `config/paper_trading.yaml` - Paper trading configuration
 - `pyproject.toml` - Python project configuration
 
 **Override Precedence**: Config files override defaults

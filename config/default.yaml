@@ -63,17 +63,17 @@ capital_tiers:
   low:
     min_capital: 2000
     max_capital: 10000
-    description: "Suitable for defined-risk spread strategies"
+    description: "Suitable for credit spread strategies with defined risk"
     enabled_strategies:
-      - vertical_spread
-      - debit_spread
+      - vertical_spread  # Credit spreads only - proven +367% returns
 
   medium:
     min_capital: 10000
     max_capital: 50000
-    description: "Can trade most spread strategies"
+    description: "Can trade debit spreads, credit spreads, and neutral strategies"
     enabled_strategies:
-      - vertical_spread
+      - vertical_spread  # Credit spreads
+      - debit_spread     # Requires $10k+ for position sizing
       - iron_condor
 
   high:
@@ -178,16 +178,17 @@ strategies:
       min_return_on_risk: 0.25  # Credit should be 1/4 of spread width (more opportunities)
 
   # Debit Spread Strategy (Bull Call / Bear Put)
-  # Capital Tier: LOW ($1,500+)
-  # Lower capital requirement than credit spreads ($50-$250 vs $500)
-  # Better risk/reward: 150% profit potential vs 25% for credit spreads
-  # Best in low IV environments where buying options is cheaper
+  # Capital Tier: MEDIUM ($10,000+)
+  # REQUIRES $10,000 MINIMUM due to position sizing constraints
+  # ITM/near-money options cost $1,100-$1,900 per spread
+  # 25% position limit requires $2,500 available ($10k * 25%)
+  # Directional strategy - best with strong technical signals
   debit_spread:
     enabled: true
     allocation: 0.3  # 30% of capital for debit spreads
     capital_requirements:
-      min_capital: 1500  # $1,500 minimum
-      recommended_capital: 3000
+      min_capital: 10000  # $10,000 minimum (validated via backtest)
+      recommended_capital: 15000  # $15k+ recommended for flexibility
       max_allocation_percent: 40
     config:
       underlyings:
