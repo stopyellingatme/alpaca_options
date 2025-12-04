@@ -306,6 +306,34 @@ def calculate_volatility(
     return float(volatility) if not pd.isna(volatility) else 0.0
 
 
+def calculate_roc(
+    prices: pd.Series,
+    period: int = 14,
+) -> float:
+    """Calculate Rate of Change (ROC) indicator.
+
+    ROC = ((Current Price - Price N periods ago) / Price N periods ago) * 100
+
+    Args:
+        prices: Series of closing prices.
+        period: Number of periods to look back.
+
+    Returns:
+        ROC percentage.
+    """
+    if len(prices) <= period:
+        return 0.0
+
+    old_price = prices.iloc[-period - 1]
+    current_price = prices.iloc[-1]
+
+    if old_price == 0:
+        return 0.0
+
+    roc = ((current_price - old_price) / old_price) * 100
+    return float(roc)
+
+
 def is_above_sma(price: float, sma: float) -> bool:
     """Check if price is above SMA."""
     return price > sma

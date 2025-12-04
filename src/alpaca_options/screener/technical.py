@@ -15,9 +15,13 @@ from alpaca_options.screener.base import (
 from alpaca_options.screener.filters import (
     calculate_atr,
     calculate_average_volume,
+    calculate_bollinger_bands,
     calculate_dollar_volume,
+    calculate_macd,
+    calculate_roc,
     calculate_rsi,
     calculate_sma,
+    calculate_stochastic,
     is_in_price_range,
     is_overbought,
     is_oversold,
@@ -27,6 +31,91 @@ from alpaca_options.screener.filters import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def determine_consensus_signal(
+    rsi: Optional[float],
+    macd_histogram: Optional[float],
+    bb_position: Optional[float],
+    stoch_k: Optional[float],
+    roc: Optional[float],
+    rsi_oversold: float = 30.0,
+    rsi_overbought: float = 70.0,
+) -> tuple[str, int]:
+    """Determine trading signal using consensus from multiple indicators.
+
+    Requires at least 3 out of 5 indicators to agree for a bullish/bearish signal.
+
+    Indicator Rules:
+        RSI: < 30 bullish, > 70 bearish
+        MACD: histogram > 0 bullish, < 0 bearish
+        Bollinger: position < 20 bullish, > 80 bearish
+        Stochastic: %K < 20 bullish, > 80 bearish
+        ROC: < -5% bullish, > 5% bearish
+
+    Args:
+        rsi: Current RSI value.
+        macd_histogram: MACD histogram value.
+        bb_position: Bollinger Band position (0-100).
+        stoch_k: Stochastic %K value.
+        roc: Rate of Change percentage.
+        rsi_oversold: RSI oversold threshold.
+        rsi_overbought: RSI overbought threshold.
+
+    Returns:
+        Tuple of (signal, agreement_count) where signal is "bullish", "bearish", or "neutral"
+    """
+    bullish_votes = 0
+    bearish_votes = 0
+    total_votes = 0
+
+    # RSI vote
+    if rsi is not None:
+        total_votes += 1
+        if rsi < rsi_oversold:
+            bullish_votes += 1
+        elif rsi > rsi_overbought:
+            bearish_votes += 1
+
+    # MACD vote
+    if macd_histogram is not None:
+        total_votes += 1
+        if macd_histogram > 0:
+            bullish_votes += 1
+        elif macd_histogram < 0:
+            bearish_votes += 1
+
+    # Bollinger Bands vote
+    if bb_position is not None:
+        total_votes += 1
+        if bb_position < 20:  # Near lower band
+            bullish_votes += 1
+        elif bb_position > 80:  # Near upper band
+            bearish_votes += 1
+
+    # Stochastic vote
+    if stoch_k is not None:
+        total_votes += 1
+        if stoch_k < 20:
+            bullish_votes += 1
+        elif stoch_k > 80:
+            bearish_votes += 1
+
+    # ROC vote
+    if roc is not None:
+        total_votes += 1
+        if roc < -5:  # Strong negative momentum = oversold
+            bullish_votes += 1
+        elif roc > 5:  # Strong positive momentum = overbought
+            bearish_votes += 1
+
+    # Determine consensus (need 3+ votes)
+    if bullish_votes >= 3:
+        return "bullish", bullish_votes
+    elif bearish_votes >= 3:
+        return "bearish", bearish_votes
+    else:
+        return "neutral", max(bullish_votes, bearish_votes)
 
 
 class TechnicalScreener(BaseScreener):
@@ -96,6 +185,17 @@ class TechnicalScreener(BaseScreener):
             avg_volume = calculate_average_volume(volumes, 20)
             dollar_volume = calculate_dollar_volume(current_price, int(avg_volume))
 
+            # New indicators (Phase 2 Enhancement)
+            macd_line, macd_signal, macd_histogram = calculate_macd(close_prices)
+            bb_upper, bb_middle, bb_lower = calculate_bollinger_bands(close_prices)
+            stoch_k, stoch_d = calculate_stochastic(high_prices, low_prices, close_prices)
+            roc = calculate_roc(close_prices, period=14)
+
+            # Calculate Bollinger Band position (0-100, where 50 = middle)
+            bb_position = None
+            if bb_upper and bb_lower and bb_upper != bb_lower:
+                bb_position = ((current_price - bb_lower) / (bb_upper - bb_lower)) * 100
+
             # Calculate ATR as percentage of price
             atr_percent = (atr / current_price * 100) if current_price > 0 else 0
 
@@ -121,20 +221,28 @@ class TechnicalScreener(BaseScreener):
             )
             filter_results["min_dollar_volume"] = dollar_vol_ok
 
-            # RSI filters (optional)
+            # Determine signal using consensus from all indicators (Phase 2 Enhancement)
+            signal, agreement_count = determine_consensus_signal(
+                rsi=rsi,
+                macd_histogram=macd_histogram,
+                bb_position=bb_position,
+                stoch_k=stoch_k,
+                roc=roc,
+                rsi_oversold=self.criteria.rsi_oversold or 30.0,
+                rsi_overbought=self.criteria.rsi_overbought or 70.0,
+            )
+
+            # RSI filters (optional) - still check for backwards compatibility
             rsi_ok = True
-            signal = "neutral"
 
             if self.criteria.rsi_oversold is not None:
                 if is_oversold(rsi, self.criteria.rsi_oversold):
-                    signal = "bullish"
                     filter_results["rsi_oversold"] = True
                 else:
                     filter_results["rsi_oversold"] = False
 
             if self.criteria.rsi_overbought is not None:
                 if is_overbought(rsi, self.criteria.rsi_overbought):
-                    signal = "bearish"
                     filter_results["rsi_overbought"] = True
                 else:
                     filter_results["rsi_overbought"] = False
@@ -154,6 +262,8 @@ class TechnicalScreener(BaseScreener):
                 rsi_ok = filter_results.get("rsi_overbought", True)
 
             filter_results["rsi_filter"] = rsi_ok
+            filter_results["consensus_signal"] = signal
+            filter_results["consensus_agreement"] = agreement_count
 
             # SMA filters (optional)
             sma_ok = True
@@ -221,6 +331,17 @@ class TechnicalScreener(BaseScreener):
                 sma_200=sma_200,
                 atr=atr,
                 atr_percent=atr_percent,
+                # New indicators (Phase 2 Enhancement)
+                macd_line=macd_line,
+                macd_signal=macd_signal,
+                macd_histogram=macd_histogram,
+                bb_upper=bb_upper,
+                bb_middle=bb_middle,
+                bb_lower=bb_lower,
+                bb_position=bb_position,
+                stoch_k=stoch_k,
+                stoch_d=stoch_d,
+                roc=roc,
                 filter_results=filter_results,
                 signal=signal,
             )

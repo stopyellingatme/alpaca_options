@@ -121,6 +121,24 @@ class ScreenerResult:
     atr: Optional[float] = None
     atr_percent: Optional[float] = None
 
+    # MACD indicator
+    macd_line: Optional[float] = None
+    macd_signal: Optional[float] = None
+    macd_histogram: Optional[float] = None
+
+    # Bollinger Bands
+    bb_upper: Optional[float] = None
+    bb_middle: Optional[float] = None
+    bb_lower: Optional[float] = None
+    bb_position: Optional[float] = None  # % position within bands (0-100)
+
+    # Stochastic Oscillator
+    stoch_k: Optional[float] = None
+    stoch_d: Optional[float] = None
+
+    # Rate of Change
+    roc: Optional[float] = None
+
     # Options data
     option_volume: Optional[int] = None
     total_open_interest: Optional[int] = None
