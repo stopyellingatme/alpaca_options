@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from alpaca_options.screener.base import (
     BaseScreener,
@@ -15,6 +15,9 @@ from alpaca_options.screener.filters import (
     is_tight_spread,
     score_options_setup,
 )
+
+if TYPE_CHECKING:
+    from alpaca_options.screener.iv_data import IVDataManager
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,7 @@ class OptionsScreener(BaseScreener):
         options_data_client,
         criteria: Optional[ScreeningCriteria] = None,
         cache_ttl_seconds: int = 300,
+        iv_data_manager: Optional["IVDataManager"] = None,
     ) -> None:
         """Initialize the options screener.
 
@@ -45,10 +49,12 @@ class OptionsScreener(BaseScreener):
             options_data_client: Alpaca OptionHistoricalDataClient for quotes.
             criteria: Screening criteria to apply.
             cache_ttl_seconds: Cache TTL in seconds.
+            iv_data_manager: Optional IVDataManager for IV rank calculation.
         """
         super().__init__(criteria, cache_ttl_seconds)
         self._trading_client = trading_client
         self._data_client = options_data_client
+        self._iv_data_manager = iv_data_manager
 
     @property
     def screener_type(self) -> ScreenerType:
@@ -149,10 +155,18 @@ class OptionsScreener(BaseScreener):
                 weeklies_ok = has_weeklies
                 filter_results["has_weeklies"] = has_weeklies
 
-            # IV rank filters (if we have IV data)
+            # IV rank calculation (if IV data manager available)
             iv_ok = True
-            iv_rank = None  # Would need historical IV to calculate
+            iv_rank = None
 
+            if self._iv_data_manager and avg_iv is not None:
+                # Calculate IV rank from historical data
+                iv_rank = self._iv_data_manager.calculate_iv_rank(symbol, avg_iv)
+                logger.debug(
+                    f"{symbol} IV Rank: {iv_rank:.1f if iv_rank else 'N/A'} (Current IV: {avg_iv:.3f})"
+                )
+
+            # IV rank filters
             if self.criteria.min_iv_rank is not None and iv_rank is not None:
                 if iv_rank < self.criteria.min_iv_rank:
                     iv_ok = False

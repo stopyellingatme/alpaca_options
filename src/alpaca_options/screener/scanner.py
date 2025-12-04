@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from alpaca_options.screener.base import (
     ScreenerResult,
@@ -21,6 +21,9 @@ from alpaca_options.screener.universes import (
     get_universe,
     get_options_friendly_symbols,
 )
+
+if TYPE_CHECKING:
+    from alpaca_options.screener.iv_data import IVDataManager
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +126,7 @@ class Scanner:
         options_data_client,
         config: Optional[ScannerConfig] = None,
         criteria: Optional[ScreeningCriteria] = None,
+        iv_data_manager: Optional["IVDataManager"] = None,
     ) -> None:
         """Initialize the scanner.
 
@@ -132,9 +136,11 @@ class Scanner:
             options_data_client: Alpaca OptionHistoricalDataClient.
             config: Scanner configuration.
             criteria: Screening criteria to apply.
+            iv_data_manager: Optional IVDataManager for IV rank calculation.
         """
         self.config = config or ScannerConfig()
         self.criteria = criteria or ScreeningCriteria()
+        self.iv_data_manager = iv_data_manager
 
         # Initialize screeners
         self._technical_screener = TechnicalScreener(
@@ -148,12 +154,20 @@ class Scanner:
             options_data_client=options_data_client,
             criteria=self.criteria,
             cache_ttl_seconds=self.config.cache_ttl_seconds,
+            iv_data_manager=iv_data_manager,
         )
 
         # Results cache
         self._last_scan_time: Optional[datetime] = None
         self._last_results: list[CombinedResult] = []
         self._is_scanning = False
+
+        # Log IV rank capability
+        if iv_data_manager:
+            cached_symbols = iv_data_manager.get_cached_symbols()
+            logger.info(f"Scanner initialized with IV rank support ({len(cached_symbols)} symbols cached)")
+        else:
+            logger.info("Scanner initialized without IV rank support")
 
     @property
     def is_scanning(self) -> bool:
