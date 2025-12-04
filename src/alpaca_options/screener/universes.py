@@ -18,6 +18,7 @@ class UniverseType(Enum):
     NASDAQ100 = "nasdaq100"
     OPTIONS_FRIENDLY = "options_friendly"
     HIGH_VOLUME_OPTIONS = "high_volume_options"
+    EXPANDED_OPTIONS = "expanded_options"  # Phase 3 Enhancement: ~300 symbols
     ETFS = "etfs"
     SECTOR_ETFS = "sector_etfs"
     CUSTOM = "custom"
@@ -215,6 +216,39 @@ OPTIONS_FRIENDLY = list(set(
     HIGH_VOLUME_OPTIONS_STOCKS[:50]  # Top 50 most liquid options stocks
 ))
 
+# Expanded universe for Phase 3 (~300 symbols)
+# Combines multiple sources while respecting API limits
+EXPANDED_OPTIONS = list(set(
+    MAJOR_ETFS +                      # 25 ETFs
+    SECTOR_ETFS +                     # 20 sector ETFs
+    HIGH_VOLUME_OPTIONS_STOCKS +      # 181 high-volume stocks
+    NASDAQ_100[:50] +                 # Top 50 Nasdaq 100 (overlap filtered)
+    SP500_LIQUID[:50]                 # Top 50 S&P 500 (overlap filtered)
+))
+
+# Tiered priority for scanning (Phase 3 Enhancement)
+# Tier 1: Highest priority - scan every 5 minutes
+TIER_1_PRIORITY = [
+    # Major indexes and most liquid ETFs
+    "SPY", "QQQ", "IWM", "DIA",
+    # Mega-cap tech with highest options volume
+    "AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL",
+    # High-volatility tickers
+    "AMD", "PLTR", "COIN",
+]
+
+# Tier 2: Medium priority - scan every 10 minutes
+TIER_2_PRIORITY = [
+    # Sector ETFs
+    *SECTOR_ETFS,
+    # Next tier high-volume stocks
+    "NFLX", "BABA", "BA", "DIS", "JPM", "BAC", "GS", "V", "MA",
+    "PYPL", "SQ", "SHOP", "UBER", "ABNB", "SNOW", "RIVN",
+]
+
+# Tier 3: Low priority - scan every 15 minutes
+# Everything else in EXPANDED_OPTIONS that's not in Tier 1 or 2
+
 
 def get_sp500_symbols() -> list[str]:
     """Get S&P 500 symbols (most liquid subset)."""
@@ -239,6 +273,60 @@ def get_sector_etfs() -> list[str]:
 def get_major_etfs() -> list[str]:
     """Get major ETF symbols."""
     return MAJOR_ETFS.copy()
+
+
+def get_expanded_options() -> list[str]:
+    """Get expanded options universe (~300 symbols).
+
+    Phase 3 Enhancement: Larger symbol set for comprehensive market coverage.
+    """
+    return EXPANDED_OPTIONS.copy()
+
+
+def get_tier_1_symbols() -> list[str]:
+    """Get Tier 1 (highest priority) symbols.
+
+    Scan frequency: Every 5 minutes.
+    """
+    return TIER_1_PRIORITY.copy()
+
+
+def get_tier_2_symbols() -> list[str]:
+    """Get Tier 2 (medium priority) symbols.
+
+    Scan frequency: Every 10 minutes.
+    """
+    return TIER_2_PRIORITY.copy()
+
+
+def get_tier_3_symbols() -> list[str]:
+    """Get Tier 3 (low priority) symbols.
+
+    Scan frequency: Every 15 minutes.
+    Returns symbols in EXPANDED_OPTIONS not in Tier 1 or 2.
+    """
+    tier1_set = set(TIER_1_PRIORITY)
+    tier2_set = set(TIER_2_PRIORITY)
+
+    tier3 = [s for s in EXPANDED_OPTIONS if s not in tier1_set and s not in tier2_set]
+    return tier3
+
+
+def get_symbol_tier(symbol: str) -> int:
+    """Get the priority tier for a symbol.
+
+    Args:
+        symbol: Stock symbol.
+
+    Returns:
+        Tier number (1, 2, or 3). Returns 3 if not found.
+    """
+    if symbol in TIER_1_PRIORITY:
+        return 1
+    elif symbol in TIER_2_PRIORITY:
+        return 2
+    else:
+        return 3
 
 
 def get_universe(universe_type: UniverseType) -> SymbolUniverse:
@@ -274,6 +362,12 @@ def get_universe(universe_type: UniverseType) -> SymbolUniverse:
             universe_type=UniverseType.HIGH_VOLUME_OPTIONS,
             symbols=HIGH_VOLUME_OPTIONS_STOCKS,
             description="Stocks with highest options trading volume",
+        ),
+        UniverseType.EXPANDED_OPTIONS: SymbolUniverse(
+            name="Expanded Options Universe",
+            universe_type=UniverseType.EXPANDED_OPTIONS,
+            symbols=get_expanded_options(),
+            description="Phase 3 Enhancement: ~300 symbols with tiered scanning",
         ),
         UniverseType.ETFS: SymbolUniverse(
             name="Major ETFs",
