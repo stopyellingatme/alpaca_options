@@ -136,6 +136,7 @@ logging:
   backup_count: 5
 
 # Screener Configuration - Dynamic Symbol Discovery
+# Enhanced with consensus signals: Requires 3+ of 5 indicators (RSI, MACD, Bollinger Bands, Stochastic, ROC) to agree
 screener:
   enabled: true  # Enable screener for opportunity discovery
 
