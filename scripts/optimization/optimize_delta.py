@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Dict, List
 
 # Add project root to path
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from dotenv import load_dotenv
@@ -344,9 +344,12 @@ async def main():
             baseline_result = next((r for r in valid_results if r["delta"] == 0.20), None)
             if baseline_result and best_sharpe["delta"] != 0.20:
                 baseline_sharpe = baseline_result["metrics"].sharpe_ratio
-                improvement = ((best_sharpe["metrics"].sharpe_ratio / baseline_sharpe) - 1) * 100
-                console.print(f"\n[yellow]  → Improvement vs baseline (delta=0.20): "
-                             f"{improvement:+.1f}% Sharpe[/yellow]")
+                if baseline_sharpe > 0:
+                    improvement = ((best_sharpe["metrics"].sharpe_ratio / baseline_sharpe) - 1) * 100
+                    console.print(f"\n[yellow]  → Improvement vs baseline (delta=0.20): "
+                                 f"{improvement:+.1f}% Sharpe[/yellow]")
+                else:
+                    console.print(f"\n[yellow]  → Baseline Sharpe is 0, cannot calculate improvement[/yellow]")
 
     # Summary recommendations
     console.print("\n\n[bold cyan]Recommendations:[/bold cyan]")
@@ -359,16 +362,22 @@ async def main():
             baseline = next((r for r in valid_results if r["delta"] == 0.20), None)
 
             if baseline and best["delta"] != 0.20:
-                sharpe_improvement = ((best["metrics"].sharpe_ratio / baseline["metrics"].sharpe_ratio) - 1) * 100
-                if sharpe_improvement > 5:  # More than 5% improvement
-                    console.print(
-                        f"[green]✓ {symbol}: Consider delta={best['delta']:.2f} "
-                        f"(+{sharpe_improvement:.1f}% Sharpe improvement)[/green]"
-                    )
+                baseline_sharpe = baseline["metrics"].sharpe_ratio
+                if baseline_sharpe > 0:
+                    sharpe_improvement = ((best["metrics"].sharpe_ratio / baseline_sharpe) - 1) * 100
+                    if sharpe_improvement > 5:  # More than 5% improvement
+                        console.print(
+                            f"[green]✓ {symbol}: Consider delta={best['delta']:.2f} "
+                            f"(+{sharpe_improvement:.1f}% Sharpe improvement)[/green]"
+                        )
+                    else:
+                        console.print(
+                            f"[yellow]→ {symbol}: Current delta=0.20 is near-optimal "
+                            f"(best is {best['delta']:.2f} with {sharpe_improvement:+.1f}% improvement)[/yellow]"
+                        )
                 else:
                     console.print(
-                        f"[yellow]→ {symbol}: Current delta=0.20 is near-optimal "
-                        f"(best is {best['delta']:.2f} with {sharpe_improvement:+.1f}% improvement)[/yellow]"
+                        f"[yellow]→ {symbol}: Baseline Sharpe is 0, recommending best delta={best['delta']:.2f}[/yellow]"
                     )
             else:
                 console.print(

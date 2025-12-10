@@ -29,6 +29,13 @@ from alpaca_options.strategies.base import (
     SignalType,
 )
 
+# Phase 2A: Execution realism models
+from alpaca_options.backtesting.execution_model import (
+    FillProbabilityModel,
+    FillContext,
+    GapRiskModel,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,6 +108,10 @@ class BacktestMetrics:
     starting_equity: float
     ending_equity: float
     peak_equity: float
+    # Phase 2A: Execution realism metrics
+    fill_rejections: int = 0
+    gap_events: int = 0
+    fill_rejection_rate: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         """Convert metrics to dictionary."""
@@ -126,6 +137,10 @@ class BacktestMetrics:
             "starting_equity": self.starting_equity,
             "ending_equity": self.ending_equity,
             "peak_equity": self.peak_equity,
+            # Phase 2A metrics
+            "fill_rejections": self.fill_rejections,
+            "gap_events": self.gap_events,
+            "fill_rejection_rate": self.fill_rejection_rate,
         }
 
 
@@ -188,6 +203,11 @@ class SlippageModel:
     """Models realistic slippage for backtesting.
 
     Supported models:
+    - "adaptive": Real market data-based slippage (RECOMMENDED - Phase 1 improvement)
+        * Uses real Alpaca options data analysis from Oct 2024
+        * Adjusts for delta (moneyness): 20-delta OTM ~3.89%, ATM ~2.97%, Deep ITM ~7.52%
+        * Adjusts for DTE: wider spreads close to expiration
+        * Most realistic model based on actual market conditions
     - "orats": ORATS research-based slippage (recommended for options)
         * 75% of bid-ask spread for single-leg positions
         * 65% of bid-ask spread for two-leg spreads (verticals, debits, credits)
@@ -215,6 +235,8 @@ class SlippageModel:
         bid: Optional[float] = None,
         ask: Optional[float] = None,
         num_legs: Optional[int] = None,
+        delta: Optional[float] = None,
+        dte: Optional[int] = None,
     ) -> float:
         """Calculate slippage for an order.
 
@@ -226,11 +248,48 @@ class SlippageModel:
             bid: Bid price for spread-based calculation.
             ask: Ask price for spread-based calculation.
             num_legs: Number of legs in the strategy (for ORATS model).
+            delta: Option delta for adaptive model (optional).
+            dte: Days to expiry for adaptive model (optional).
 
         Returns:
             Slippage amount (always positive, represents cost).
         """
-        if self._model_type == "orats" and bid is not None and ask is not None:
+        if self._model_type == "adaptive":
+            # Adaptive slippage based on real Alpaca market data analysis (Oct 2024)
+            # Data showed: 20-delta OTM ~3.89%, ATM ~2.97%, Deep ITM ~7.52%
+
+            # Use delta to determine moneyness and base spread percentage
+            abs_delta = abs(delta) if delta is not None else 0.20  # Default to 20-delta
+
+            # Base spread percentage from real market data
+            if abs_delta < 0.05:  # Way OTM
+                base_spread_pct = 0.0705  # 7.05% (from analysis)
+            elif abs_delta < 0.15:  # 10-delta OTM
+                base_spread_pct = 0.0550  # 5.50% (from analysis)
+            elif abs_delta < 0.25:  # 20-delta OTM (our target range)
+                base_spread_pct = 0.0389  # 3.89% (from analysis)
+            elif abs_delta < 0.40:  # Approaching ATM
+                base_spread_pct = 0.0356  # 3.56% (ITM from analysis)
+            elif abs_delta < 0.60:  # ATM
+                base_spread_pct = 0.0297  # 2.97% (from analysis)
+            elif abs_delta < 0.75:  # ITM
+                base_spread_pct = 0.0356  # 3.56% (from analysis)
+            else:  # Deep ITM (delta > 0.75)
+                base_spread_pct = 0.0752  # 7.52% (from analysis)
+
+            # Adjust for DTE - spreads widen close to expiration
+            dte_multiplier = 1.0
+            if dte is not None:
+                if dte < 7:
+                    dte_multiplier = 1.2  # 20% wider spreads in last week
+                elif dte < 14:
+                    dte_multiplier = 1.1  # 10% wider in last 2 weeks
+
+            # Calculate slippage as percentage of price
+            slippage_per_contract = price * base_spread_pct * dte_multiplier
+            return abs(slippage_per_contract * quantity * 100)
+
+        elif self._model_type == "orats" and bid is not None and ask is not None:
             # ORATS slippage methodology based on strategy complexity
             # Research shows slippage decreases with more legs (better pricing)
             spread = ask - bid
@@ -311,12 +370,42 @@ class BacktestEngine:
         )
         self._commission_per_contract = config.execution.commission_per_contract
 
-        # Realistic model parameters (with defaults for backwards compatibility)
+        # Phase 2A: Initialize execution realism models
+        # Fill probability model (enabled/disabled via config)
+        self._enable_fill_probability = getattr(config.execution, 'enable_fill_probability', False)
+        if self._enable_fill_probability:
+            self._fill_model = FillProbabilityModel(
+                min_oi_threshold=getattr(config.execution, 'min_oi_threshold', 100),
+                max_spread_threshold=getattr(config.execution, 'max_spread_threshold', 0.10),
+                illiquid_hour_multiplier=getattr(config.execution, 'illiquid_hour_multiplier', 0.85),
+                high_vix_multiplier=getattr(config.execution, 'high_vix_multiplier', 0.90),
+            )
+            self._fill_rejections = 0  # Track rejections
+            logger.info("Phase 2A: Fill Probability Model enabled")
+        else:
+            self._fill_model = None
+            self._fill_rejections = 0
+
+        # Gap risk model (enabled/disabled via config)
+        self._enable_gap_risk = getattr(config.execution, 'enable_gap_risk', False)
+        if self._enable_gap_risk:
+            self._gap_model = GapRiskModel(
+                avg_overnight_gap_pct=getattr(config.execution, 'avg_overnight_gap', 0.005),
+                weekend_multiplier=getattr(config.execution, 'weekend_gap_multiplier', 1.6),
+                earnings_multiplier=getattr(config.execution, 'earnings_gap_multiplier', 3.0),
+                stop_loss_slippage_pct=getattr(config.execution, 'gap_stop_loss_slippage', 0.02),
+            )
+            self._gap_events = 0  # Track gap events
+            logger.info("Phase 2A: Gap Risk Model enabled")
+        else:
+            self._gap_model = None
+            self._gap_events = 0
+
+        # Early assignment and gap risk parameters (for _process_positions)
+        self._early_assignment_threshold = 0.80  # 80 delta = deep ITM with assignment risk
         self._gap_risk_probability = getattr(config.execution, 'gap_risk_probability', 0.015)
-        self._gap_severity_min = getattr(config.execution, 'gap_severity_min', 0.20)
-        self._gap_severity_max = getattr(config.execution, 'gap_severity_max', 0.50)
-        self._early_assignment_threshold = getattr(config.execution, 'early_assignment_threshold', 0.90)
-        self._liquidity_rejection_rate = getattr(config.execution, 'liquidity_rejection_rate', 0.05)
+        self._gap_severity_min = getattr(config.execution, 'gap_severity_min', 0.3)
+        self._gap_severity_max = getattr(config.execution, 'gap_severity_max', 0.7)
 
         # Backtest state
         self._equity: float = config.initial_capital
@@ -375,7 +464,7 @@ class BacktestEngine:
 
         last_date = None
 
-        for timestamp in timestamps:
+        for i, timestamp in enumerate(timestamps):
             # Get options chain first (to get the symbol)
             chain = options_data.get(timestamp)
             if chain is None:
@@ -386,12 +475,24 @@ class BacktestEngine:
                 underlying_data, timestamp, symbol=chain.underlying
             )
 
+            # Update chain's underlying price with actual market price
+            # (DoltHub doesn't provide this, so we populate it from underlying_data)
+            if market_data and market_data.close > 0:
+                chain.underlying_price = market_data.close
+
             # Update risk manager
             self._risk_manager.update_account(
                 equity=self._equity,
                 buying_power=self._cash,
                 daily_pnl=self._get_daily_pnl(timestamp),
             )
+
+            # === PHASE 2A: GAP RISK MONITORING ===
+            # Check if we're crossing a market close/open boundary (overnight or weekend gap)
+            if self._enable_gap_risk and self._gap_model and i < len(timestamps) - 1:
+                next_timestamp = timestamps[i + 1]
+                if self._gap_model.should_check_gap_risk(timestamp, next_timestamp):
+                    await self._process_gap_risk(timestamp, next_timestamp, chain)
 
             # Process existing positions (check for expiration, assignment)
             await self._process_positions(timestamp, chain)
@@ -422,6 +523,8 @@ class BacktestEngine:
 
                 # Build contract map for risk check
                 contracts = self._build_contract_map(signal, chain)
+                logger.debug(f"Contract map size: {len(contracts)} (expected {len(signal.legs)})")
+                logger.debug(f"Contract symbols: {list(contracts.keys())}")
 
                 # Calculate required buying power for this trade
                 trade_risk = self._risk_manager._calculate_trade_risk(signal, contracts)
@@ -437,8 +540,14 @@ class BacktestEngine:
 
                 # Check risk manager rules
                 risk_check = self._risk_manager.check_signal_risk(signal, contracts)
+                logger.debug(f"Risk check result: {risk_check.result}, passed={risk_check.passed}, violations={len(risk_check.violations)}, warnings={len(risk_check.warnings)}")
 
-                if risk_check.passed:
+                # Accept both PASSED and WARNING (warnings are informational, not blocking)
+                if risk_check.passed or risk_check.has_warnings:
+                    # Log warnings if present
+                    if risk_check.has_warnings:
+                        logger.info(f"Trade accepted with {len(risk_check.warnings)} warnings")
+
                     # Reserve buying power for this trade
                     self._buying_power -= trade_risk
                     self._collateral_in_use += trade_risk
@@ -501,6 +610,9 @@ class BacktestEngine:
         self._trade_counter = 0
         self._equity_history = []
         self._daily_pnl = []
+        # Phase 2A: Reset execution realism counters
+        self._fill_rejections = 0
+        self._gap_events = 0
 
     def _get_market_data(
         self, underlying_data: pd.DataFrame, timestamp: datetime, symbol: str = ""
@@ -570,55 +682,87 @@ class BacktestEngine:
         - Fill probability based on market conditions
         - Partial rejection (order not filled)
         """
-        import random
+        # === PHASE 2A: FILL PROBABILITY CHECK ===
+        # Replace basic liquidity check with sophisticated fill probability model
+        if self._enable_fill_probability and self._fill_model:
+            # Get VIX for fill context (default to 20 if not available)
+            vix = 20.0  # TODO: Load actual VIX data from market data
 
-        # === LIQUIDITY / FILL PROBABILITY CHECK ===
-        # Not all orders get filled in real markets
-        for leg in signal.legs:
-            contract = None
-            for c in chain.contracts:
-                if c.symbol == leg.contract_symbol:
-                    contract = c
-                    break
+            for leg in signal.legs:
+                contract = None
+                for c in chain.contracts:
+                    if c.symbol == leg.contract_symbol:
+                        contract = c
+                        break
 
-            if contract is None:
-                logger.info(f"Order rejected: contract {leg.contract_symbol} not found")
-                self._buying_power += collateral_required
-                self._collateral_in_use -= collateral_required
-                return
-
-            # Check liquidity - reject if spread is too wide
-            if contract.bid > 0 and contract.ask > 0:
-                spread_pct = (contract.ask - contract.bid) / contract.mid_price
-                if spread_pct > 0.20:  # >20% spread = illiquid
-                    # 50% chance of rejection for wide spreads
-                    if random.random() < 0.5:
-                        logger.info(
-                            f"Order rejected: spread too wide ({spread_pct:.1%}) "
-                            f"on {leg.contract_symbol}"
-                        )
-                        self._buying_power += collateral_required
-                        self._collateral_in_use -= collateral_required
-                        return
-
-            # Check open interest - reject if too low
-            if contract.open_interest < 50:
-                # 30% chance of rejection for low OI
-                if random.random() < 0.3:
-                    logger.info(
-                        f"Order rejected: low open interest ({contract.open_interest}) "
-                        f"on {leg.contract_symbol}"
-                    )
+                if contract is None:
+                    logger.debug(f"Order rejected: contract {leg.contract_symbol} not found")
                     self._buying_power += collateral_required
                     self._collateral_in_use -= collateral_required
                     return
 
-            # General fill probability (configurable rejection rate)
-            if random.random() < self._liquidity_rejection_rate:
-                logger.info(f"Order rejected: random fill failure on {leg.contract_symbol}")
-                self._buying_power += collateral_required
-                self._collateral_in_use -= collateral_required
-                return
+                # Calculate bid-ask spread percentage
+                if contract.bid > 0 and contract.ask > 0 and contract.mid_price > 0:
+                    spread_pct = (contract.ask - contract.bid) / contract.mid_price
+                else:
+                    spread_pct = 0.20  # Assume wide spread if no data
+
+                # Create fill context for this leg
+                fill_context = FillContext(
+                    open_interest=contract.open_interest,
+                    bid_ask_spread_pct=spread_pct,
+                    timestamp=timestamp,
+                    vix=vix,
+                    order_size=leg.quantity,
+                    avg_daily_volume=contract.volume if contract.volume else 1000,
+                    option_type=contract.option_type,
+                    is_opening=True,  # This is an opening trade
+                )
+
+                # Check if order will fill
+                if not self._fill_model.will_fill(fill_context):
+                    logger.info(
+                        f"Order rejected: low fill probability on {leg.contract_symbol} "
+                        f"(OI={contract.open_interest}, Spread={spread_pct:.2%})"
+                    )
+                    self._fill_rejections += 1
+                    self._buying_power += collateral_required
+                    self._collateral_in_use -= collateral_required
+                    return
+
+        # If Phase 2A disabled, use legacy basic liquidity checks
+        elif not self._enable_fill_probability:
+            import random
+            for leg in signal.legs:
+                contract = None
+                for c in chain.contracts:
+                    if c.symbol == leg.contract_symbol:
+                        contract = c
+                        break
+
+                if contract is None:
+                    logger.debug(f"Order rejected: contract {leg.contract_symbol} not found")
+                    self._buying_power += collateral_required
+                    self._collateral_in_use -= collateral_required
+                    return
+
+                # Legacy: Check liquidity - reject if spread is too wide
+                if contract.bid > 0 and contract.ask > 0:
+                    spread_pct = (contract.ask - contract.bid) / contract.mid_price
+                    if spread_pct > 0.20:  # >20% spread = illiquid
+                        if random.random() < 0.5:
+                            logger.debug(f"Order rejected: spread too wide ({spread_pct:.1%})")
+                            self._buying_power += collateral_required
+                            self._collateral_in_use -= collateral_required
+                            return
+
+                # Legacy: Check open interest - reject if too low
+                if contract.open_interest < 50:
+                    if random.random() < 0.3:
+                        logger.debug(f"Order rejected: low OI ({contract.open_interest})")
+                        self._buying_power += collateral_required
+                        self._collateral_in_use -= collateral_required
+                        return
 
         self._trade_counter += 1
         trade_id = f"BT-{self._trade_counter:06d}"
@@ -655,6 +799,8 @@ class BacktestEngine:
                 bid=contract.bid,
                 ask=contract.ask,
                 num_legs=len(signal.legs),  # Pass number of legs for ORATS model
+                delta=contract.delta,  # For adaptive model
+                dte=contract.days_to_expiry,  # For adaptive model
             )
 
             # Adjust price for slippage (worse for us)
@@ -706,6 +852,82 @@ class BacktestEngine:
             f"premium=${total_premium:.2f}, commission=${total_commission:.2f}, "
             f"collateral=${collateral_required:.2f}"
         )
+
+    async def _process_gap_risk(
+        self,
+        current_time: datetime,
+        next_bar_time: datetime,
+        chain: OptionChain,
+    ) -> None:
+        """Process gap risk for open positions crossing market close/open boundaries.
+
+        When the market is closed (overnight, weekend), positions can gap against us,
+        and stop losses cannot be executed. This models the additional slippage
+        that occurs when a position moves significantly during market close.
+        """
+        if not self._open_positions:
+            return
+
+        # Get underlying volatility (default to 20% if not available)
+        underlying_iv = 0.20  # TODO: Load actual IV from market data
+
+        for trade_id, trade in list(self._open_positions.items()):
+            # Calculate current P&L for this position
+            current_pnl = 0.0
+            position_notional = 0.0
+
+            for leg in trade.legs:
+                contract = None
+                for c in chain.contracts:
+                    if c.symbol == leg.contract_symbol:
+                        contract = c
+                        break
+
+                if contract:
+                    entry_price = trade.entry_prices.get(leg.contract_symbol, 0)
+                    current_price = contract.mid_price
+                    position_notional += current_price * leg.quantity * 100
+
+                    if leg.side == "sell":
+                        # Sold option: profit if current price < entry
+                        current_pnl += (entry_price - current_price) * leg.quantity * 100
+                    else:
+                        # Bought option: profit if current price > entry
+                        current_pnl += (current_price - entry_price) * leg.quantity * 100
+
+            # Calculate P&L as percentage of initial credit/debit
+            # For credit spreads, initial credit is the premium we collected
+            # P&L % = current_pnl / initial_credit
+            # If we're losing more than 100% of credit (2x credit stop loss), model gap slippage
+            initial_value = sum(
+                trade.entry_prices.get(leg.contract_symbol, 0) * leg.quantity * 100
+                for leg in trade.legs
+                if leg.side == "sell"
+            )
+            if initial_value == 0:
+                initial_value = 1  # Avoid division by zero
+
+            pnl_pct = current_pnl / initial_value
+
+            # Estimate gap impact (only applied if position is losing badly)
+            gap_slippage = self._gap_model.estimate_gap_impact(
+                position_pnl_pct=pnl_pct,
+                position_notional=position_notional,
+                timestamp=current_time,
+                underlying_volatility=underlying_iv,
+                is_earnings=False,  # TODO: Detect earnings events
+            )
+
+            if gap_slippage > 0:
+                # Apply gap slippage to position (will be realized on close)
+                trade.metadata["gap_adjustment"] = (
+                    trade.metadata.get("gap_adjustment", 0) - gap_slippage
+                )
+                self._gap_events += 1
+                logger.info(
+                    f"Gap risk event for {trade_id}: adding ${gap_slippage:.2f} slippage "
+                    f"(P&L={pnl_pct:.1%}, crossing {current_time.time()} -> {next_bar_time.time()})"
+                )
 
     async def _process_positions(
         self, timestamp: datetime, chain: OptionChain
@@ -893,6 +1115,56 @@ class BacktestEngine:
             return
 
         trade = self._open_positions[trade_id]
+
+        # === PHASE 2A: FILL PROBABILITY CHECK FOR CLOSING TRADES ===
+        # Check if closing order will fill (usually easier than opening, but still check)
+        if self._enable_fill_probability and self._fill_model and chain:
+            # Get VIX for fill context (default to 20 if not available)
+            vix = 20.0  # TODO: Load actual VIX data from market data
+
+            for leg in trade.legs:
+                contract = None
+                for c in chain.contracts:
+                    if c.symbol == leg.contract_symbol:
+                        contract = c
+                        break
+
+                if contract is None:
+                    # If contract not found, assume expired/assigned - allow close
+                    continue
+
+                # Calculate bid-ask spread percentage
+                if contract.bid > 0 and contract.ask > 0 and contract.mid_price > 0:
+                    spread_pct = (contract.ask - contract.bid) / contract.mid_price
+                else:
+                    spread_pct = 0.20  # Assume wide spread if no data
+
+                # Create fill context for closing trade
+                fill_context = FillContext(
+                    open_interest=contract.open_interest,
+                    bid_ask_spread_pct=spread_pct,
+                    timestamp=timestamp,
+                    vix=vix,
+                    order_size=leg.quantity,
+                    avg_daily_volume=contract.volume if contract.volume else 1000,
+                    option_type=contract.option_type,
+                    is_opening=False,  # This is a CLOSING trade (easier to fill)
+                )
+
+                # Check if closing order will fill
+                if not self._fill_model.will_fill(fill_context):
+                    logger.warning(
+                        f"Close order rejected for {trade_id} leg {leg.contract_symbol}: "
+                        f"low fill probability (OI={contract.open_interest}, Spread={spread_pct:.2%})"
+                    )
+                    self._fill_rejections += 1
+                    # Don't close this position - it's stuck!
+                    # In real trading, this means you're holding an illiquid position
+                    # Mark in metadata that we tried to close but failed
+                    trade.metadata["close_rejected"] = True
+                    trade.metadata["close_rejection_time"] = timestamp
+                    return
+
         exit_prices = {}
         total_pnl = 0.0
         total_commission = 0.0
@@ -918,6 +1190,8 @@ class BacktestEngine:
                             bid=contract.bid,
                             ask=contract.ask,
                             num_legs=len(trade.legs),
+                            delta=contract.delta,  # For adaptive model
+                            dte=contract.days_to_expiry,  # For adaptive model
                         )
                         total_slippage += slippage
 
@@ -1097,26 +1371,49 @@ class BacktestEngine:
                 max_drawdown_percent = (drawdown / peak) * 100
 
         # Sharpe and Sortino ratios
-        daily_returns = pd.Series(self._daily_pnl)
-        if len(daily_returns) > 1:
-            avg_daily_return = daily_returns.mean()
-            std_daily_return = daily_returns.std()
+        # FIXED: Calculate returns directly from equity_history instead of flawed _daily_pnl
+        # For daily backtests, _daily_pnl incorrectly returns zeros
+        if len(self._equity_history) > 1:
+            # Group equity by date (take last value of each day)
+            equity_by_date = {}
+            for ts, eq in self._equity_history:
+                date = ts.date()
+                equity_by_date[date] = eq  # Last equity value for each date
 
-            # Sharpe (assuming 0% risk-free rate)
-            sharpe_ratio = (
-                (avg_daily_return / std_daily_return) * (252**0.5)
-                if std_daily_return > 0
-                else 0
-            )
+            # Sort by date and calculate day-over-day returns
+            sorted_dates = sorted(equity_by_date.keys())
+            daily_equity = [equity_by_date[d] for d in sorted_dates]
 
-            # Sortino (downside deviation)
-            downside_returns = daily_returns[daily_returns < 0]
-            downside_std = downside_returns.std() if len(downside_returns) > 0 else 0
-            sortino_ratio = (
-                (avg_daily_return / downside_std) * (252**0.5)
-                if downside_std > 0
-                else 0
-            )
+            # Calculate percentage returns
+            daily_returns = []
+            for i in range(1, len(daily_equity)):
+                if daily_equity[i-1] > 0:
+                    ret = (daily_equity[i] - daily_equity[i-1]) / daily_equity[i-1]
+                    daily_returns.append(ret)
+
+            if len(daily_returns) > 1:
+                daily_returns = pd.Series(daily_returns)
+                avg_daily_return = daily_returns.mean()
+                std_daily_return = daily_returns.std()
+
+                # Sharpe (assuming 0% risk-free rate)
+                sharpe_ratio = (
+                    (avg_daily_return / std_daily_return) * (252**0.5)
+                    if std_daily_return > 0
+                    else 0
+                )
+
+                # Sortino (downside deviation)
+                downside_returns = daily_returns[daily_returns < 0]
+                downside_std = downside_returns.std() if len(downside_returns) > 0 else 0
+                sortino_ratio = (
+                    (avg_daily_return / downside_std) * (252**0.5)
+                    if downside_std > 0
+                    else 0
+                )
+            else:
+                sharpe_ratio = 0.0
+                sortino_ratio = 0.0
         else:
             sharpe_ratio = 0.0
             sortino_ratio = 0.0
@@ -1132,6 +1429,13 @@ class BacktestEngine:
         # Costs
         total_commissions = sum(t.commissions for t in self._trades)
         total_slippage = sum(t.slippage for t in self._trades)
+
+        # Phase 2A: Calculate fill rejection rate
+        # Rejection rate = rejections / (trades + rejections)
+        total_signals = total_trades + self._fill_rejections
+        fill_rejection_rate = (
+            (self._fill_rejections / total_signals * 100) if total_signals > 0 else 0.0
+        )
 
         return BacktestMetrics(
             total_return=total_return,
@@ -1155,4 +1459,8 @@ class BacktestEngine:
             starting_equity=self._starting_equity,
             ending_equity=self._equity,
             peak_equity=self._peak_equity,
+            # Phase 2A metrics
+            fill_rejections=self._fill_rejections,
+            gap_events=self._gap_events,
+            fill_rejection_rate=fill_rejection_rate,
         )

@@ -12,10 +12,12 @@ from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    OptionLegRequest,
     StopLimitOrderRequest,
     StopOrderRequest,
 )
 from alpaca.trading.enums import (
+    OrderClass,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -26,6 +28,47 @@ from alpaca.trading.enums import (
 from alpaca_options.strategies.base import OptionLeg, OptionSignal
 
 logger = logging.getLogger(__name__)
+
+
+class OrderRejectionError(Exception):
+    """Exception raised when an order is rejected by the broker.
+
+    Attributes:
+        message: Explanation of the rejection
+        error_code: Alpaca error code (if available)
+        order_details: Details about the rejected order
+    """
+
+    def __init__(
+        self,
+        message: str,
+        error_code: Optional[str] = None,
+        order_details: Optional[dict] = None,
+    ):
+        self.message = message
+        self.error_code = error_code
+        self.order_details = order_details or {}
+        super().__init__(self.message)
+
+    def __str__(self):
+        parts = [f"Order Rejected: {self.message}"]
+        if self.error_code:
+            parts.append(f"Error Code: {self.error_code}")
+        if self.order_details:
+            parts.append(f"Details: {self.order_details}")
+        return " | ".join(parts)
+
+
+class InsufficientFundsError(OrderRejectionError):
+    """Exception for insufficient funds/buying power."""
+
+    def __init__(self, message: str, required: Optional[float] = None, available: Optional[float] = None):
+        order_details = {}
+        if required is not None:
+            order_details["required"] = required
+        if available is not None:
+            order_details["available"] = available
+        super().__init__(message, error_code="INSUFFICIENT_FUNDS", order_details=order_details)
 
 
 class OrderState(Enum):
@@ -87,6 +130,45 @@ class TradingManager:
         self._client = trading_client
         self._pending_orders: dict[str, OrderResult] = {}
 
+    def _parse_api_error(self, error: Exception) -> tuple[str, Optional[str], dict]:
+        """Parse API error to extract useful information.
+
+        Args:
+            error: The exception raised by Alpaca API.
+
+        Returns:
+            Tuple of (error_message, error_code, additional_details).
+        """
+        error_msg = str(error)
+        error_code = None
+        details = {}
+
+        # Try to extract error code from common Alpaca error formats
+        if "insufficient" in error_msg.lower() and "buying power" in error_msg.lower():
+            error_code = "INSUFFICIENT_BUYING_POWER"
+        elif "insufficient" in error_msg.lower() and "fund" in error_msg.lower():
+            error_code = "INSUFFICIENT_FUNDS"
+        elif "forbidden" in error_msg.lower():
+            error_code = "FORBIDDEN"
+        elif "not found" in error_msg.lower():
+            error_code = "NOT_FOUND"
+        elif "invalid" in error_msg.lower():
+            error_code = "INVALID_REQUEST"
+        elif "rate limit" in error_msg.lower():
+            error_code = "RATE_LIMIT"
+        elif "market closed" in error_msg.lower():
+            error_code = "MARKET_CLOSED"
+        elif "symbol" in error_msg.lower() and "not tradable" in error_msg.lower():
+            error_code = "SYMBOL_NOT_TRADABLE"
+
+        # Extract additional details from the error message
+        if hasattr(error, 'status_code'):
+            details['status_code'] = error.status_code
+        if hasattr(error, 'response'):
+            details['response'] = str(error.response)
+
+        return error_msg, error_code, details
+
     def _map_order_status(self, status: OrderStatus) -> OrderState:
         """Map Alpaca order status to our OrderState."""
         mapping = {
@@ -145,8 +227,13 @@ class TradingManager:
             logger.info(f"Market order submitted: {result.order_id} {side} {quantity} {symbol}")
             return result
         except Exception as e:
-            logger.error(f"Failed to submit market order: {e}")
-            raise
+            error_msg, error_code, details = self._parse_api_error(e)
+            logger.error(f"Failed to submit market order for {symbol}: {error_msg}")
+
+            if error_code in ("INSUFFICIENT_BUYING_POWER", "INSUFFICIENT_FUNDS"):
+                raise InsufficientFundsError(f"Insufficient funds: {error_msg}") from e
+            else:
+                raise OrderRejectionError(error_msg, error_code, details) from e
 
     async def submit_limit_order(
         self,
@@ -188,8 +275,13 @@ class TradingManager:
             )
             return result
         except Exception as e:
-            logger.error(f"Failed to submit limit order: {e}")
-            raise
+            error_msg, error_code, details = self._parse_api_error(e)
+            logger.error(f"Failed to submit limit order for {symbol}: {error_msg}")
+
+            if error_code in ("INSUFFICIENT_BUYING_POWER", "INSUFFICIENT_FUNDS"):
+                raise InsufficientFundsError(f"Insufficient funds: {error_msg}") from e
+            else:
+                raise OrderRejectionError(error_msg, error_code, details) from e
 
     async def submit_stop_order(
         self,
@@ -231,8 +323,13 @@ class TradingManager:
             )
             return result
         except Exception as e:
-            logger.error(f"Failed to submit stop order: {e}")
-            raise
+            error_msg, error_code, details = self._parse_api_error(e)
+            logger.error(f"Failed to submit stop order for {symbol}: {error_msg}")
+
+            if error_code in ("INSUFFICIENT_BUYING_POWER", "INSUFFICIENT_FUNDS"):
+                raise InsufficientFundsError(f"Insufficient funds: {error_msg}") from e
+            else:
+                raise OrderRejectionError(error_msg, error_code, details) from e
 
     async def submit_stop_limit_order(
         self,
@@ -277,8 +374,149 @@ class TradingManager:
             )
             return result
         except Exception as e:
-            logger.error(f"Failed to submit stop-limit order: {e}")
-            raise
+            error_msg, error_code, details = self._parse_api_error(e)
+            logger.error(f"Failed to submit stop-limit order for {symbol}: {error_msg}")
+
+            if error_code in ("INSUFFICIENT_BUYING_POWER", "INSUFFICIENT_FUNDS"):
+                raise InsufficientFundsError(f"Insufficient funds: {error_msg}") from e
+            else:
+                raise OrderRejectionError(error_msg, error_code, details) from e
+
+    async def submit_multi_leg_order(
+        self,
+        signal: OptionSignal,
+        order_type: str = "market",
+        net_price: Optional[float] = None,
+        time_in_force: str = "day",
+    ) -> OrderResult:
+        """Submit a multi-leg options order (spread) atomically.
+
+        This is the CORRECT way to submit spreads - all legs execute together
+        as a single atomic order with a net credit/debit price.
+
+        Args:
+            signal: The option signal with multiple legs.
+            order_type: "market" or "limit".
+            net_price: Net credit (positive) or debit (negative) for limit orders.
+                      For credit spreads, this is the premium received.
+                      For debit spreads, this is the premium paid.
+            time_in_force: Order duration ("day" is the only valid option for options).
+
+        Returns:
+            OrderResult with order details.
+
+        Raises:
+            ValueError: If invalid parameters provided.
+            Exception: If order submission fails.
+
+        Note:
+            - All legs are executed together atomically
+            - No partial fills - either all legs fill or none do
+            - For limit orders, net_price sets the total credit/debit for the spread
+            - TimeInForce.DAY is the only supported TIF for options orders
+        """
+        if not signal.legs:
+            raise ValueError("Signal must have at least one leg")
+
+        # Validate time_in_force (only DAY is supported for options)
+        if time_in_force.lower() != "day":
+            logger.warning(
+                f"Time in force '{time_in_force}' may not be supported for options. "
+                "Using 'day' instead."
+            )
+            time_in_force = "day"
+
+        tif = self._parse_time_in_force(time_in_force)
+
+        # Build legs using OptionLegRequest
+        option_legs = []
+        for leg in signal.legs:
+            order_side = OrderSide.BUY if leg.side.lower() == "buy" else OrderSide.SELL
+            option_legs.append(
+                OptionLegRequest(
+                    symbol=leg.contract_symbol,
+                    side=order_side,
+                    ratio_qty=leg.quantity,
+                )
+            )
+
+        # Submit as MLEG order
+        try:
+            if order_type.lower() == "market":
+                request = MarketOrderRequest(
+                    qty=1,  # Number of spreads (usually 1)
+                    order_class=OrderClass.MLEG,
+                    time_in_force=tif,
+                    legs=option_legs,
+                )
+                logger.info(
+                    f"Submitting multi-leg MARKET order: {signal.strategy_name} "
+                    f"on {signal.underlying} with {len(option_legs)} legs"
+                )
+            else:
+                # Limit order with net price
+                if net_price is None:
+                    raise ValueError(
+                        "net_price required for limit orders. "
+                        "For credit spreads, use positive value (premium received). "
+                        "For debit spreads, use positive value (premium paid)."
+                    )
+
+                request = LimitOrderRequest(
+                    qty=1,
+                    order_class=OrderClass.MLEG,
+                    time_in_force=tif,
+                    limit_price=abs(net_price),  # Alpaca expects positive value
+                    legs=option_legs,
+                )
+                logger.info(
+                    f"Submitting multi-leg LIMIT order: {signal.strategy_name} "
+                    f"on {signal.underlying} with {len(option_legs)} legs @ net ${net_price:.2f}"
+                )
+
+            order = self._client.submit_order(request)
+            result = self._create_order_result(order)
+            self._pending_orders[result.order_id] = result
+
+            logger.info(
+                f"Multi-leg order submitted successfully: {result.order_id} "
+                f"({signal.signal_type.value})"
+            )
+            return result
+
+        except Exception as e:
+            # Parse the error to provide better feedback
+            error_msg, error_code, details = self._parse_api_error(e)
+
+            logger.error(
+                f"Failed to submit multi-leg order for {signal.strategy_name}: "
+                f"{error_msg} (code: {error_code})"
+            )
+
+            # Provide specific exceptions for common error types
+            if error_code in ("INSUFFICIENT_BUYING_POWER", "INSUFFICIENT_FUNDS"):
+                raise InsufficientFundsError(
+                    f"Insufficient funds to place {signal.strategy_name} order: {error_msg}"
+                ) from e
+            elif error_code == "MARKET_CLOSED":
+                raise OrderRejectionError(
+                    f"Cannot place order while market is closed: {error_msg}",
+                    error_code=error_code,
+                ) from e
+            elif error_code == "SYMBOL_NOT_TRADABLE":
+                symbols = [leg.contract_symbol for leg in signal.legs]
+                raise OrderRejectionError(
+                    f"One or more option contracts not tradable: {symbols}",
+                    error_code=error_code,
+                    order_details={"symbols": symbols},
+                ) from e
+            else:
+                # Generic order rejection error
+                raise OrderRejectionError(
+                    error_msg,
+                    error_code=error_code,
+                    order_details=details,
+                ) from e
 
     async def submit_option_order(
         self,
@@ -287,6 +525,9 @@ class TradingManager:
         time_in_force: str = "day",
     ) -> OrderResult:
         """Submit an order for a single option leg.
+
+        WARNING: For spreads (multiple legs), use submit_multi_leg_order() instead.
+        This method should only be used for single-leg strategies like buying a call/put.
 
         Args:
             leg: The option leg to trade.
@@ -317,39 +558,59 @@ class TradingManager:
     async def submit_signal(
         self,
         signal: OptionSignal,
-        order_type: str = "limit",
+        order_type: str = "market",
+        net_price: Optional[float] = None,
         time_in_force: str = "day",
-    ) -> list[OrderResult]:
-        """Submit orders for all legs in an option signal.
+    ) -> OrderResult:
+        """Submit orders for an option signal.
+
+        For multi-leg strategies (spreads), this uses atomic multi-leg orders.
+        For single-leg strategies, this submits a single option order.
 
         Args:
             signal: The option signal with legs to execute.
             order_type: "market" or "limit".
-            time_in_force: Order duration.
+            net_price: For multi-leg limit orders, the net credit/debit price.
+                      For credit spreads, use positive value (premium received).
+                      For debit spreads, use positive value (premium paid).
+            time_in_force: Order duration (only "day" is supported for options).
 
         Returns:
-            List of OrderResults for each leg.
-        """
-        results = []
-        for leg in signal.legs:
-            try:
-                result = await self.submit_option_order(
-                    leg=leg,
-                    order_type=order_type,
-                    time_in_force=time_in_force,
-                )
-                results.append(result)
-            except Exception as e:
-                logger.error(f"Failed to submit leg {leg.contract_symbol}: {e}")
-                # Cancel previously submitted orders on failure
-                for prev_result in results:
-                    try:
-                        await self.cancel_order(prev_result.order_id)
-                    except Exception:
-                        pass
-                raise
+            OrderResult with order details.
 
-        return results
+        Raises:
+            ValueError: If invalid parameters provided.
+            Exception: If order submission fails.
+
+        Note:
+            Multi-leg orders are submitted atomically - all legs execute together
+            or none execute. This prevents adverse fills and naked positions.
+        """
+        if len(signal.legs) > 1:
+            # Multi-leg strategy - use atomic MLEG order
+            logger.info(
+                f"Submitting multi-leg signal: {signal.strategy_name} "
+                f"({signal.signal_type.value}) with {len(signal.legs)} legs"
+            )
+            return await self.submit_multi_leg_order(
+                signal=signal,
+                order_type=order_type,
+                net_price=net_price,
+                time_in_force=time_in_force,
+            )
+        elif len(signal.legs) == 1:
+            # Single-leg strategy - submit single option order
+            logger.info(
+                f"Submitting single-leg signal: {signal.strategy_name} "
+                f"({signal.signal_type.value})"
+            )
+            return await self.submit_option_order(
+                leg=signal.legs[0],
+                order_type=order_type,
+                time_in_force=time_in_force,
+            )
+        else:
+            raise ValueError("Signal must have at least one leg")
 
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an open order.
@@ -421,6 +682,95 @@ class TradingManager:
         except Exception as e:
             logger.error(f"Failed to get open orders: {e}")
             return []
+
+    def check_multi_leg_order_status(self, order_id: str) -> dict:
+        """Check the status of a multi-leg order and its individual legs.
+
+        This is useful for monitoring multi-leg orders, though they should
+        execute atomically (all legs fill together or none fill).
+
+        Args:
+            order_id: The order ID to check.
+
+        Returns:
+            Dictionary with order status and leg details.
+
+        Example:
+            {
+                "order_id": "abc123",
+                "status": "filled",
+                "order_class": "mleg",
+                "legs": [
+                    {"symbol": "SPY240315P00500000", "side": "sell", "status": "filled"},
+                    {"symbol": "SPY240315P00495000", "side": "buy", "status": "filled"}
+                ],
+                "is_atomic": True,  # All legs have same status
+                "filled_qty": 1,
+                "message": "All legs filled successfully"
+            }
+        """
+        try:
+            order = self._client.get_order_by_id(order_id)
+
+            # Check if this is a multi-leg order
+            is_mleg = hasattr(order, 'order_class') and order.order_class == OrderClass.MLEG
+
+            result = {
+                "order_id": str(order.id),
+                "status": order.status.value if order.status else "unknown",
+                "order_class": order.order_class.value if hasattr(order, 'order_class') and order.order_class else "simple",
+                "legs": [],
+                "is_atomic": True,
+                "filled_qty": int(order.filled_qty) if order.filled_qty else 0,
+            }
+
+            # Check individual legs if this is a multi-leg order
+            if is_mleg and hasattr(order, 'legs') and order.legs:
+                leg_statuses = set()
+                for leg in order.legs:
+                    leg_info = {
+                        "symbol": leg.symbol,
+                        "side": leg.side.value if leg.side else "unknown",
+                        "status": leg.status.value if leg.status else "unknown",
+                        "filled_qty": int(leg.filled_qty) if leg.filled_qty else 0,
+                    }
+                    result["legs"].append(leg_info)
+                    leg_statuses.add(leg_info["status"])
+
+                # Check if all legs have the same status (atomic)
+                result["is_atomic"] = len(leg_statuses) == 1
+
+                if not result["is_atomic"]:
+                    result["message"] = (
+                        "WARNING: Legs have different statuses! "
+                        "This should not happen with MLEG orders. "
+                        f"Statuses: {leg_statuses}"
+                    )
+                    logger.error(
+                        f"Multi-leg order {order_id} has non-atomic status: {leg_statuses}"
+                    )
+                elif result["status"] == "filled":
+                    result["message"] = "All legs filled successfully"
+                elif result["status"] == "rejected":
+                    result["message"] = "Order rejected (all legs)"
+                elif result["status"] == "canceled":
+                    result["message"] = "Order canceled (all legs)"
+                else:
+                    result["message"] = f"Order {result['status']}"
+            else:
+                result["message"] = f"Order {result['status']}"
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to check multi-leg order status for {order_id}: {e}")
+            return {
+                "order_id": order_id,
+                "status": "error",
+                "message": str(e),
+                "legs": [],
+                "is_atomic": False,
+            }
 
     def get_positions(self) -> list[Position]:
         """Get all current positions.

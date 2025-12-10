@@ -23,6 +23,7 @@ Bear Call Spread (Credit):
 - Bearish bias, profits if price stays below short strike
 """
 
+import logging
 from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
@@ -37,6 +38,8 @@ from alpaca_options.strategies.base import (
     SignalType,
 )
 from alpaca_options.strategies.criteria import StrategyCriteria
+
+logger = logging.getLogger(__name__)
 
 
 class SpreadDirection(Enum):
@@ -71,7 +74,7 @@ class VerticalSpreadStrategy(BaseStrategy):
         super().__init__()
         self._underlyings: list[str] = []
         self._spread_width: int = 5  # Strike width between legs
-        self._delta_target: float = 0.20  # 20 delta = ~80% probability OTM
+        self._delta_target: float = 0.20  # 20 delta = ~80% probability OTM (global default)
         self._min_credit: float = 30.0  # Minimum credit (should be ~1/3 of width)
         self._min_dte: int = 30  # Enter with 30+ DTE for theta decay
         self._max_dte: int = 45  # Cap at 45 DTE
@@ -92,6 +95,9 @@ class VerticalSpreadStrategy(BaseStrategy):
         # Minimum return on risk for trade entry
         self._min_return_on_risk: float = 0.25  # Credit should be 1/4 of width (more opportunities)
 
+        # Symbol-specific configurations (Phase 1 optimization support)
+        self._symbol_configs: dict[str, dict[str, Any]] = {}
+
         # Cached market data for direction determination
         self._market_data: dict[str, MarketData] = {}
 
@@ -107,7 +113,7 @@ class VerticalSpreadStrategy(BaseStrategy):
         """Initialize the vertical spread strategy with configuration."""
         self._underlyings = config.get("underlyings", [])
         self._spread_width = config.get("spread_width", 5)
-        self._delta_target = config.get("delta_target", 0.20)  # 20 delta default
+        self._delta_target = config.get("delta_target", 0.20)  # 20 delta default (global)
         self._min_credit = config.get("min_credit", 30.0)
         self._min_dte = config.get("min_dte", 30)  # 30 DTE minimum
         self._max_dte = config.get("max_dte", 45)
@@ -124,8 +130,39 @@ class VerticalSpreadStrategy(BaseStrategy):
         self._stop_loss_multiplier = config.get("stop_loss_multiplier", 2.0)
         self._min_return_on_risk = config.get("min_return_on_risk", 0.33)
 
+        # Load symbol-specific configurations (Phase 1 optimization)
+        self._symbol_configs = config.get("symbol_configs", {})
+        if self._symbol_configs:
+            logger.info(f"Loaded symbol-specific configs for: {', '.join(self._symbol_configs.keys())}")
+            for symbol, cfg in self._symbol_configs.items():
+                delta = cfg.get("delta_target")
+                if delta:
+                    logger.info(f"  {symbol}: delta_target={delta:.2f}")
+
         self._config = config
         self._is_initialized = True
+
+    def _get_delta_for_symbol(self, symbol: str) -> float:
+        """Get delta target for a specific symbol.
+
+        Uses symbol-specific delta from symbol_configs if available,
+        otherwise falls back to global delta_target.
+
+        Args:
+            symbol: The underlying symbol
+
+        Returns:
+            Delta target for this symbol
+        """
+        # Check if symbol has specific configuration
+        if symbol in self._symbol_configs:
+            symbol_cfg = self._symbol_configs[symbol]
+            delta = symbol_cfg.get("delta_target")
+            if delta is not None:
+                return delta
+
+        # Fall back to global delta
+        return self._delta_target
 
     async def on_market_data(self, data: MarketData) -> Optional[OptionSignal]:
         """Process market data update and cache for direction determination."""
@@ -164,7 +201,10 @@ class VerticalSpreadStrategy(BaseStrategy):
         """
         data = self._market_data.get(symbol)
         if data is None:
+            logger.debug(f"[{symbol}] No market data available for direction")
             return None
+
+        logger.debug(f"[{symbol}] Market data: RSI={data.rsi_14}, SMA20={data.sma_20}, SMA50={data.sma_50}, Close={data.close}")
 
         rsi_direction = None
         ma_direction = None
@@ -173,74 +213,108 @@ class VerticalSpreadStrategy(BaseStrategy):
         if data.rsi_14 is not None:
             if data.rsi_14 <= self._rsi_oversold:
                 rsi_direction = SpreadDirection.BULL  # Oversold = bullish
+                logger.debug(f"[{symbol}] RSI {data.rsi_14:.1f} <= {self._rsi_oversold} -> BULLISH")
             elif data.rsi_14 >= self._rsi_overbought:
                 rsi_direction = SpreadDirection.BEAR  # Overbought = bearish
+                logger.debug(f"[{symbol}] RSI {data.rsi_14:.1f} >= {self._rsi_overbought} -> BEARISH")
+            else:
+                logger.debug(f"[{symbol}] RSI {data.rsi_14:.1f} in neutral zone ({self._rsi_oversold}-{self._rsi_overbought})")
+        else:
+            logger.debug(f"[{symbol}] No RSI data available")
 
         # Check moving average alignment for trend
         if data.sma_20 is not None and data.sma_50 is not None:
             if data.close > data.sma_20 > data.sma_50:
                 ma_direction = SpreadDirection.BULL
+                logger.debug(f"[{symbol}] MA alignment: Close > SMA20 > SMA50 -> BULLISH")
             elif data.close < data.sma_20 < data.sma_50:
                 ma_direction = SpreadDirection.BEAR
+                logger.debug(f"[{symbol}] MA alignment: Close < SMA20 < SMA50 -> BEARISH")
+            else:
+                logger.debug(f"[{symbol}] MA alignment not clear")
+        else:
+            logger.debug(f"[{symbol}] Missing SMA data (SMA20={data.sma_20}, SMA50={data.sma_50})")
 
         # Priority: RSI signal takes precedence (short-term momentum)
         if rsi_direction is not None:
+            logger.info(f"[{symbol}] Direction: {rsi_direction.value.upper()} (RSI signal)")
             return rsi_direction
 
         # Fall back to MA direction if no RSI signal
         if ma_direction is not None:
+            logger.info(f"[{symbol}] Direction: {ma_direction.value.upper()} (MA signal)")
             return ma_direction
 
         # No clear direction
+        logger.debug(f"[{symbol}] No clear direction signal")
         return None
 
     def _find_spread_opportunity(
         self, chain: OptionChain, direction: SpreadDirection
     ) -> Optional[OptionSignal]:
         """Find a vertical spread opportunity based on direction."""
+        logger.debug(f"[{chain.underlying}] Searching for {direction.value} spread, underlying_price=${chain.underlying_price:.2f}")
+        logger.debug(f"[{chain.underlying}] Total contracts in chain: {len(chain.contracts)}")
+
         # Filter contracts by DTE
         valid_contracts = chain.filter_by_dte(self._min_dte, self._max_dte)
+        logger.debug(f"[{chain.underlying}] Contracts after DTE filter ({self._min_dte}-{self._max_dte} days): {len(valid_contracts)}")
+
         if not valid_contracts:
+            logger.warning(f"[{chain.underlying}] No contracts match DTE range {self._min_dte}-{self._max_dte}")
             return None
 
         # Get unique expirations
         expirations = sorted(set(c.expiration for c in valid_contracts))
         if not expirations:
+            logger.warning(f"[{chain.underlying}] No expirations found in valid contracts")
             return None
 
+        logger.debug(f"[{chain.underlying}] Valid expirations: {[exp.date() for exp in expirations]}")
+
         # Try each expiration
-        for expiration in expirations:
+        for i, expiration in enumerate(expirations):
             contracts_at_exp = [
                 c for c in valid_contracts if c.expiration == expiration
             ]
+
+            logger.debug(f"[{chain.underlying}] Trying expiration {i+1}/{len(expirations)}: {expiration.date()} ({len(contracts_at_exp)} contracts)")
 
             # Choose spread type based on direction and credit preference
             if direction == SpreadDirection.BULL:
                 if self._prefer_credit:
                     # Bull Put Spread (Credit)
+                    logger.debug(f"[{chain.underlying}] Building bull put spread (credit)")
                     signal = self._build_bull_put_spread(
                         contracts_at_exp, chain.underlying, chain.underlying_price
                     )
                 else:
                     # Bull Call Spread (Debit)
+                    logger.debug(f"[{chain.underlying}] Building bull call spread (debit)")
                     signal = self._build_bull_call_spread(
                         contracts_at_exp, chain.underlying, chain.underlying_price
                     )
             else:  # BEAR
                 if self._prefer_credit:
                     # Bear Call Spread (Credit)
+                    logger.debug(f"[{chain.underlying}] Building bear call spread (credit)")
                     signal = self._build_bear_call_spread(
                         contracts_at_exp, chain.underlying, chain.underlying_price
                     )
                 else:
                     # Bear Put Spread (Debit)
+                    logger.debug(f"[{chain.underlying}] Building bear put spread (debit)")
                     signal = self._build_bear_put_spread(
                         contracts_at_exp, chain.underlying, chain.underlying_price
                     )
 
             if signal is not None:
+                logger.info(f"[{chain.underlying}] ✓ Found valid spread signal at expiration {expiration.date()}")
                 return signal
+            else:
+                logger.debug(f"[{chain.underlying}] No valid spread at expiration {expiration.date()}")
 
+        logger.warning(f"[{chain.underlying}] No valid spreads found across {len(expirations)} expirations")
         return None
 
     def _build_bull_put_spread(
@@ -251,23 +325,34 @@ class VerticalSpreadStrategy(BaseStrategy):
     ) -> Optional[OptionSignal]:
         """Build a bull put spread (sell put spread for credit)."""
         puts = [c for c in contracts if c.option_type == "put"]
+        logger.debug(f"  Building bull put spread: {len(puts)} puts available")
+
+        # Get symbol-specific delta target (Phase 1 optimization)
+        delta_target = self._get_delta_for_symbol(underlying)
 
         # Find short put (sell higher strike, OTM)
+        logger.debug(f"  Looking for short put (target delta={delta_target:.2f}, below price)")
         short_put = self._find_contract_by_delta(
-            puts, self._delta_target, underlying_price, below_price=True
+            puts, delta_target, underlying_price, below_price=True
         )
         if not short_put:
+            logger.warning(f"  ✗ No valid short put found for delta {delta_target:.2f}")
             return None
 
         # Find long put (buy lower strike for protection)
         target_strike = short_put.strike - self._spread_width
+        logger.debug(f"  Looking for long put (target strike=${target_strike:.2f})")
         long_put = self._find_contract_by_strike(puts, target_strike)
         if not long_put:
+            logger.warning(f"  ✗ No valid long put found at strike ${target_strike:.2f}")
             return None
 
         # Calculate credit
         credit = (short_put.bid - long_put.ask) * 100
+        logger.debug(f"  Credit calculation: ({short_put.bid:.2f} - {long_put.ask:.2f}) * 100 = ${credit:.2f}")
+
         if credit < self._min_credit:
+            logger.warning(f"  ✗ Credit ${credit:.2f} < min ${self._min_credit:.2f}")
             return None
 
         # Max risk is width minus credit
@@ -276,8 +361,13 @@ class VerticalSpreadStrategy(BaseStrategy):
 
         # Check minimum return on risk (credit should be ~1/3 of width)
         return_on_risk = credit / spread_width if spread_width > 0 else 0
+        logger.debug(f"  Return on risk: ${credit:.2f} / ${spread_width:.2f} = {return_on_risk:.1%}")
+
         if return_on_risk < self._min_return_on_risk:
+            logger.warning(f"  ✗ ROR {return_on_risk:.1%} < min {self._min_return_on_risk:.1%}")
             return None
+
+        logger.info(f"  ✓ Valid bull put spread: short=${short_put.strike}, long=${long_put.strike}, credit=${credit:.2f}, ROR={return_on_risk:.1%}")
 
         return self._create_signal(
             underlying,
@@ -344,9 +434,12 @@ class VerticalSpreadStrategy(BaseStrategy):
         """Build a bear call spread (sell call spread for credit)."""
         calls = [c for c in contracts if c.option_type == "call"]
 
+        # Get symbol-specific delta target (Phase 1 optimization)
+        delta_target = self._get_delta_for_symbol(underlying)
+
         # Find short call (sell lower strike, OTM)
         short_call = self._find_contract_by_delta(
-            calls, self._delta_target, underlying_price, below_price=False
+            calls, delta_target, underlying_price, below_price=False
         )
         if not short_call:
             return None
@@ -435,32 +528,54 @@ class VerticalSpreadStrategy(BaseStrategy):
         below_price: bool,
     ) -> Optional[OptionContract]:
         """Find contract closest to target delta."""
+        logger.debug(f"  Finding contract: target_delta={target_delta:.2f}, price=${underlying_price:.2f}, below_price={below_price}")
+        logger.debug(f"  Searching {len(contracts)} contracts")
+
+        no_delta_count = 0
+        wrong_side_count = 0
+        bad_spread_count = 0
+        low_oi_count = 0
+
         candidates = []
         for contract in contracts:
             if contract.delta is None:
+                no_delta_count += 1
                 continue
 
             # Filter by price relationship
             if below_price and contract.strike >= underlying_price:
+                wrong_side_count += 1
                 continue
             if not below_price and contract.strike <= underlying_price:
+                wrong_side_count += 1
                 continue
 
             delta_diff = abs(abs(contract.delta) - target_delta)
 
             # Check liquidity
             if contract.spread_percent > self._max_spread_percent:
+                bad_spread_count += 1
+                logger.debug(f"    {contract.symbol}: spread {contract.spread_percent:.1f}% > {self._max_spread_percent}% (REJECTED)")
                 continue
             if contract.open_interest < self._min_open_interest:
+                low_oi_count += 1
+                logger.debug(f"    {contract.symbol}: OI {contract.open_interest} < {self._min_open_interest} (REJECTED)")
                 continue
 
+            logger.debug(f"    {contract.symbol}: strike=${contract.strike}, delta={contract.delta:.3f}, diff={delta_diff:.3f} (CANDIDATE)")
             candidates.append((contract, delta_diff))
 
+        logger.debug(f"  Filtered: {no_delta_count} no delta, {wrong_side_count} wrong side, {bad_spread_count} wide spread, {low_oi_count} low OI")
+        logger.debug(f"  Found {len(candidates)} candidates")
+
         if not candidates:
+            logger.warning(f"  No valid contracts found for delta {target_delta:.2f}")
             return None
 
         candidates.sort(key=lambda x: x[1])
-        return candidates[0][0]
+        best = candidates[0][0]
+        logger.debug(f"  ✓ Selected: {best.symbol} (strike=${best.strike}, delta={best.delta:.3f})")
+        return best
 
     def _find_contract_by_strike(
         self, contracts: list[OptionContract], target_strike: float

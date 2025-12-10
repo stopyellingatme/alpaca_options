@@ -21,6 +21,7 @@ from alpaca.data.requests import (
     OptionBarsRequest,
     OptionChainRequest,
     OptionSnapshotRequest,
+    OptionTradesRequest,
     StockBarsRequest,
 )
 from alpaca.data.timeframe import TimeFrame
@@ -344,6 +345,122 @@ class AlpacaOptionsDataFetcher:
         if not df.empty:
             df.set_index(["symbol", "timestamp"], inplace=True)
 
+        return df
+
+    def fetch_option_trades(
+        self,
+        contract_symbols: list[str],
+        start_date: datetime,
+        end_date: datetime,
+    ) -> pd.DataFrame:
+        """Fetch historical trades for option contracts.
+
+        This provides tick-level trade data for more accurate backtesting
+        of execution prices and market microstructure.
+
+        Args:
+            contract_symbols: List of option contract symbols.
+            start_date: Start date.
+            end_date: End date.
+
+        Returns:
+            DataFrame with trade data (timestamp, symbol, price, size, exchange).
+        """
+        if start_date < ALPACA_OPTIONS_DATA_START:
+            logger.warning("Requested start date before Alpaca options data availability")
+            start_date = ALPACA_OPTIONS_DATA_START
+
+        logger.info(f"Fetching option trades for {len(contract_symbols)} contracts")
+
+        request = OptionTradesRequest(
+            symbol_or_symbols=contract_symbols,
+            start=start_date,
+            end=end_date,
+        )
+
+        trades = self._option_client.get_option_trades(request)
+
+        records = []
+        for symbol, trade_list in trades.data.items():
+            for trade in trade_list:
+                records.append({
+                    "symbol": symbol,
+                    "timestamp": trade.timestamp,
+                    "price": float(trade.price) if trade.price else 0.0,
+                    "size": int(trade.size) if trade.size else 0,
+                    "exchange": trade.exchange if hasattr(trade, 'exchange') else "unknown",
+                })
+
+        df = pd.DataFrame(records)
+        if not df.empty:
+            df.set_index(["symbol", "timestamp"], inplace=True)
+            # Make timezone-naive
+            if df.index.levels[1].tz is not None:
+                df.index = df.index.set_levels(
+                    df.index.levels[1].tz_localize(None), level=1
+                )
+
+        logger.info(f"Fetched {len(records)} option trades")
+        return df
+
+    def fetch_option_quotes(
+        self,
+        contract_symbols: list[str],
+        start_date: datetime,
+        end_date: datetime,
+    ) -> pd.DataFrame:
+        """Fetch historical quotes for option contracts.
+
+        NOTE: Historical quotes API is not available in current alpaca-py version.
+        This method uses option bars as a fallback to estimate bid/ask spreads.
+
+        Args:
+            contract_symbols: List of option contract symbols.
+            start_date: Start date.
+            end_date: End date.
+
+        Returns:
+            DataFrame with estimated quote data (timestamp, symbol, bid_price, ask_price).
+        """
+        logger.warning(
+            "Historical option quotes not available - using bars to estimate spreads"
+        )
+
+        if start_date < ALPACA_OPTIONS_DATA_START:
+            logger.warning("Requested start date before Alpaca options data availability")
+            start_date = ALPACA_OPTIONS_DATA_START
+
+        # Fetch bars instead and estimate bid/ask from OHLC
+        bars_df = self.fetch_option_bars(
+            contract_symbols=contract_symbols,
+            start_date=start_date,
+            end_date=end_date,
+            timeframe="1Hour",
+        )
+
+        if bars_df.empty:
+            return pd.DataFrame()
+
+        # Estimate bid/ask from bars (conservative approach)
+        # Bid = Low, Ask = High for more realistic spread
+        records = []
+        for (symbol, timestamp), row in bars_df.iterrows():
+            mid = (row['high'] + row['low']) / 2
+            spread = (row['high'] - row['low']) / 2
+            records.append({
+                "symbol": symbol,
+                "timestamp": timestamp,
+                "bid_price": mid - spread,  # Estimate
+                "ask_price": mid + spread,  # Estimate
+                "bid_size": 0,  # Not available
+                "ask_size": 0,  # Not available
+            })
+
+        df = pd.DataFrame(records)
+        if not df.empty:
+            df.set_index(["symbol", "timestamp"], inplace=True)
+
+        logger.info(f"Estimated {len(records)} option quotes from bars")
         return df
 
     def _convert_snapshot_to_contract(

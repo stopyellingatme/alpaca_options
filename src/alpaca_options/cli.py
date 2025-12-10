@@ -175,8 +175,13 @@ def backtest(
     else:
         strat_instance._config = {"underlyings": [symbol]}
 
-    # Initialize data loader
-    data_loader = BacktestDataLoader(settings.backtesting.data)
+    # Initialize data loader with Alpaca credentials for real options data
+    # The fetcher will only initialize if credentials are available
+    data_loader = BacktestDataLoader(
+        settings.backtesting.data,
+        api_key=settings.alpaca.api_key,
+        api_secret=settings.alpaca.api_secret,
+    )
 
     with Progress(
         SpinnerColumn(),
@@ -220,19 +225,26 @@ def backtest(
         # Add technical indicators
         underlying_data = data_loader.add_technical_indicators(underlying_data)
 
-        # Generate options data
-        progress.add_task("Generating options chains...", total=None)
+        # Load options data (synthetic generation removed - use only real data)
+        progress.add_task("Loading options chains...", total=None)
         if synthetic:
-            options_data = data_loader.generate_synthetic_options_data(
-                underlying_data, symbol
+            console.print(
+                "[red]ERROR: Synthetic data generation has been removed.[/red]\n"
+                "[yellow]Only real historical data is supported.[/yellow]\n"
+                "[dim]Available data: AAPL, MSFT, NVDA, SPY (Feb-Nov 2024)[/dim]\n"
+                "[dim]Use scripts/backtest_multi_symbol.py for real data backtests.[/dim]"
             )
-        else:
-            options_data = data_loader.load_options_data(symbol, start_dt, end_dt)
-            if not options_data:
-                console.print("[yellow]No real options data. Using synthetic.[/yellow]")
-                options_data = data_loader.generate_synthetic_options_data(
-                    underlying_data, symbol
-                )
+            raise typer.Exit(code=1)
+
+        options_data = data_loader.load_options_data(symbol, start_dt, end_dt)
+        if not options_data:
+            console.print(
+                f"[red]ERROR: No real options data found for {symbol}[/red]\n"
+                "[yellow]Synthetic data generation has been removed.[/yellow]\n"
+                "[dim]Available symbols: AAPL, MSFT, NVDA, SPY (Feb-Nov 2024)[/dim]\n"
+                "[dim]Use DoltHub or Alpaca data sources only.[/dim]"
+            )
+            raise typer.Exit(code=1)
 
         # Create backtest engine
         engine = BacktestEngine(settings.backtesting, settings.risk)

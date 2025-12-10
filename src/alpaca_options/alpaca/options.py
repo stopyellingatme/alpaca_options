@@ -9,9 +9,11 @@ from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.live.option import OptionDataStream
 from alpaca.data.requests import (
     OptionBarsRequest,
-    OptionLatestQuoteRequest,
     OptionChainRequest,
+    OptionLatestQuoteRequest,
+    OptionLatestTradeRequest,
     OptionSnapshotRequest,
+    OptionTradesRequest,
 )
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
@@ -388,6 +390,214 @@ class OptionsDataManager:
 
             except Exception as e:
                 logger.error(f"Failed to get option quotes: {e}")
+
+        return results
+
+    def get_option_latest_trade(self, symbol: str) -> Optional[dict]:
+        """Get the latest trade for an option contract.
+
+        Args:
+            symbol: Option contract symbol.
+
+        Returns:
+            Dictionary with trade data or None on failure.
+
+        Example:
+            {
+                "symbol": "SPY240315C00500000",
+                "timestamp": datetime(...),
+                "price": 5.25,
+                "size": 10,
+                "exchange": "CBOE"
+            }
+        """
+        try:
+            request = OptionLatestTradeRequest(symbol_or_symbols=[symbol])
+            trades = self._data_client.get_option_latest_trade(request)
+            trade = trades.get(symbol)
+
+            if trade:
+                return {
+                    "symbol": symbol,
+                    "timestamp": trade.timestamp,
+                    "price": float(trade.price) if trade.price else 0.0,
+                    "size": int(trade.size) if trade.size else 0,
+                    "exchange": trade.exchange if hasattr(trade, 'exchange') else "unknown",
+                }
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to get option trade for {symbol}: {e}")
+            return None
+
+    def get_option_latest_trades(
+        self,
+        symbols: list[str],
+    ) -> dict[str, dict]:
+        """Get latest trades for multiple option contracts.
+
+        Args:
+            symbols: List of option contract symbols.
+
+        Returns:
+            Dictionary mapping symbols to trade data.
+        """
+        results = {}
+        chunk_size = 100
+
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i:i + chunk_size]
+
+            try:
+                request = OptionLatestTradeRequest(symbol_or_symbols=chunk)
+                trades = self._data_client.get_option_latest_trade(request)
+
+                for symbol in chunk:
+                    trade = trades.get(symbol)
+                    if trade:
+                        results[symbol] = {
+                            "symbol": symbol,
+                            "timestamp": trade.timestamp,
+                            "price": float(trade.price) if trade.price else 0.0,
+                            "size": int(trade.size) if trade.size else 0,
+                            "exchange": trade.exchange if hasattr(trade, 'exchange') else "unknown",
+                        }
+
+            except Exception as e:
+                logger.error(f"Failed to get option trades: {e}")
+
+        return results
+
+    def get_option_trades(
+        self,
+        symbols: list[str],
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        limit: Optional[int] = None,
+    ) -> dict[str, list[dict]]:
+        """Get historical trades for option contracts.
+
+        This is useful for backtesting and analyzing actual execution prices.
+
+        Args:
+            symbols: List of option contract symbols.
+            start: Start datetime (default: 1 day ago).
+            end: End datetime (default: now).
+            limit: Maximum trades per symbol.
+
+        Returns:
+            Dictionary mapping symbols to list of trade dicts.
+
+        Example:
+            {
+                "SPY240315C00500000": [
+                    {
+                        "timestamp": datetime(...),
+                        "price": 5.25,
+                        "size": 10,
+                        "exchange": "CBOE"
+                    },
+                    ...
+                ]
+            }
+        """
+        if start is None:
+            start = datetime.now() - timedelta(days=1)
+        if end is None:
+            end = datetime.now()
+
+        results = {}
+
+        try:
+            request = OptionTradesRequest(
+                symbol_or_symbols=symbols,
+                start=start,
+                end=end,
+                limit=limit,
+            )
+            trades_data = self._data_client.get_option_trades(request)
+
+            for symbol in symbols:
+                symbol_trades = trades_data.get(symbol, [])
+                results[symbol] = [
+                    {
+                        "timestamp": trade.timestamp,
+                        "price": float(trade.price) if trade.price else 0.0,
+                        "size": int(trade.size) if trade.size else 0,
+                        "exchange": trade.exchange if hasattr(trade, 'exchange') else "unknown",
+                    }
+                    for trade in symbol_trades
+                ]
+
+        except Exception as e:
+            logger.error(f"Failed to get option trades: {e}")
+
+        return results
+
+    def get_option_quotes(
+        self,
+        symbols: list[str],
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        limit: Optional[int] = None,
+    ) -> dict[str, list[dict]]:
+        """Get historical quotes for option contracts.
+
+        NOTE: Historical option quotes API is not available in alpaca-py v0.43.2.
+        This method will estimate quotes from option bars as a fallback.
+
+        For real-time quotes, use get_option_latest_quote() instead.
+
+        Args:
+            symbols: List of option contract symbols.
+            start: Start datetime (default: 1 day ago).
+            end: End datetime (default: now).
+            limit: Maximum quotes per symbol.
+
+        Returns:
+            Dictionary mapping symbols to list of quote dicts (estimated from bars).
+        """
+        logger.warning(
+            "Historical option quotes not available in current alpaca-py version. "
+            "Estimating from option bars. Use get_option_latest_quote() for real-time data."
+        )
+
+        if start is None:
+            start = datetime.now() - timedelta(days=1)
+        if end is None:
+            end = datetime.now()
+
+        results = {}
+
+        try:
+            # Fallback: Get bars and estimate bid/ask from OHLC
+            bars_data = self.get_option_bars(
+                symbols=symbols,
+                timeframe="1h",
+                start=start,
+                end=end,
+                limit=limit,
+            )
+
+            for symbol in symbols:
+                if symbol in bars_data:
+                    symbol_quotes = []
+                    for bar in bars_data[symbol]:
+                        # Estimate bid/ask from high/low
+                        mid = (bar['high'] + bar['low']) / 2
+                        spread = (bar['high'] - bar['low']) / 2
+                        symbol_quotes.append({
+                            "timestamp": bar['timestamp'],
+                            "bid_price": mid - spread,
+                            "ask_price": mid + spread,
+                            "bid_size": 0,  # Not available
+                            "ask_size": 0,  # Not available
+                        })
+                    results[symbol] = symbol_quotes
+
+        except Exception as e:
+            logger.error(f"Failed to estimate option quotes from bars: {e}")
 
         return results
 

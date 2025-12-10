@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 # Add project root to path
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from dotenv import load_dotenv
@@ -400,11 +400,14 @@ async def main():
                 best_sharpe["close_dte"] != 14
             ):
                 baseline_sharpe = baseline_result["metrics"].sharpe_ratio
-                improvement = ((best_sharpe["metrics"].sharpe_ratio / baseline_sharpe) - 1) * 100
-                console.print(
-                    f"\n[yellow]  → Improvement vs baseline (21-45, exit 14): "
-                    f"{improvement:+.1f}% Sharpe[/yellow]"
-                )
+                if baseline_sharpe > 0:
+                    improvement = ((best_sharpe["metrics"].sharpe_ratio / baseline_sharpe) - 1) * 100
+                    console.print(
+                        f"\n[yellow]  → Improvement vs baseline (21-45, exit 14): "
+                        f"{improvement:+.1f}% Sharpe[/yellow]"
+                    )
+                else:
+                    console.print(f"\n[yellow]  → Baseline Sharpe is 0, cannot calculate improvement[/yellow]")
 
     # Summary recommendations
     console.print("\n\n[bold cyan]Recommendations:[/bold cyan]")
@@ -424,17 +427,23 @@ async def main():
                 best["max_dte"] != 45 or
                 best["close_dte"] != 14
             ):
-                sharpe_improvement = ((best["metrics"].sharpe_ratio / baseline["metrics"].sharpe_ratio) - 1) * 100
-                if sharpe_improvement > 5:  # More than 5% improvement
-                    console.print(
-                        f"[green]✓ {symbol}: Consider Entry ({best['min_dte']}-{best['max_dte']}), "
-                        f"Exit {best['close_dte']} "
-                        f"(+{sharpe_improvement:.1f}% Sharpe improvement)[/green]"
-                    )
+                baseline_sharpe = baseline["metrics"].sharpe_ratio
+                if baseline_sharpe > 0:
+                    sharpe_improvement = ((best["metrics"].sharpe_ratio / baseline_sharpe) - 1) * 100
+                    if sharpe_improvement > 5:  # More than 5% improvement
+                        console.print(
+                            f"[green]✓ {symbol}: Consider Entry ({best['min_dte']}-{best['max_dte']}), "
+                            f"Exit {best['close_dte']} "
+                            f"(+{sharpe_improvement:.1f}% Sharpe improvement)[/green]"
+                        )
+                    else:
+                        console.print(
+                            f"[yellow]→ {symbol}: Current DTE ranges are near-optimal "
+                            f"(best improvement: {sharpe_improvement:+.1f}%)[/yellow]"
+                        )
                 else:
                     console.print(
-                        f"[yellow]→ {symbol}: Current DTE ranges are near-optimal "
-                        f"(best improvement: {sharpe_improvement:+.1f}%)[/yellow]"
+                        f"[yellow]→ {symbol}: Baseline Sharpe is 0, recommending Entry ({best['min_dte']}-{best['max_dte']}), Exit {best['close_dte']}[/yellow]"
                     )
             else:
                 console.print(

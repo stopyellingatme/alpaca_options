@@ -70,13 +70,13 @@ def check_prerequisites() -> bool:
     return True
 
 
-def display_startup_info(screener_enabled: bool = False, universe: str = "options_friendly"):
+def display_startup_info(settings=None, screener_enabled: bool = False, universe: str = "options_friendly"):
     """Display startup information."""
     title = "[bold green]Paper Trading Bot[/bold green]"
     if screener_enabled:
         title += "\n[cyan]Screener Integration Enabled[/cyan]"
     else:
-        title += "\nVertical Spread Strategy - LOW Tier"
+        title += "\n[green]Optimized Configuration - 0.25 Delta[/green]"
 
     console.print(Panel.fit(
         f"{title}\n"
@@ -97,13 +97,31 @@ def display_startup_info(screener_enabled: bool = False, universe: str = "option
         table.add_row("Scan Mode", "Hybrid (Technical + Options)")
         table.add_row("Discovery", "Bullish, Bearish, High IV")
     else:
-        table.add_row("Strategy", "Vertical Spread")
-        table.add_row("Underlying", "QQQ")
-        table.add_row("RSI Thresholds", "40 (oversold) / 60 (overbought)")
+        # Display actual config values
+        if settings:
+            vertical_config = settings.strategies.get("vertical_spread")
+            if vertical_config and vertical_config.config:
+                cfg = vertical_config.config
+                underlyings = cfg.get("underlyings", ["Not configured"])
+                underlyings_str = ", ".join(underlyings)
+                table.add_row("Strategy", "Vertical Spread (0.25 Delta)")
+                table.add_row("Underlyings", underlyings_str)
 
-    table.add_row("Max Concurrent Positions", "3")  # Updated to match validated config
-    table.add_row("Max Contracts per Trade", "2")  # Updated to match validated config
-    table.add_row("Daily Loss Limit", "$500")  # Updated to match validated config
+                rsi_oversold = cfg.get("rsi_oversold", 45.0)
+                rsi_overbought = cfg.get("rsi_overbought", 55.0)
+                table.add_row("RSI Thresholds", f"{rsi_oversold:.0f} (oversold) / {rsi_overbought:.0f} (overbought)")
+
+                min_dte = cfg.get("min_dte", 14)
+                max_dte = cfg.get("max_dte", 30)
+                close_dte = cfg.get("close_dte", 7)
+                table.add_row("DTE Range", f"Entry: {min_dte}-{max_dte}, Exit: {close_dte}")
+        else:
+            table.add_row("Strategy", "Vertical Spread")
+            table.add_row("Underlyings", "Loading...")
+
+    table.add_row("Max Concurrent Positions", str(settings.trading.max_concurrent_positions) if settings else "3")
+    table.add_row("Max Contracts per Trade", str(settings.risk.max_contracts_per_trade) if settings else "2")
+    table.add_row("Daily Loss Limit", f"${settings.risk.daily_loss_limit:,.0f}" if settings else "$500")
 
     console.print(table)
     console.print()
@@ -296,8 +314,14 @@ def main():
     if not check_prerequisites():
         sys.exit(1)
 
-    # Display startup info
+    # Load configuration early to display in startup banner
+    from alpaca_options.core.config import load_config
+    config_path = project_root / "config" / "paper_trading.yaml"
+    settings = load_config(config_path)
+
+    # Display startup info with actual config
     display_startup_info(
+        settings=settings,
         screener_enabled=args.screener,
         universe=args.universe,
     )
