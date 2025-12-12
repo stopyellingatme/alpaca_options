@@ -283,9 +283,9 @@ def main():
     )
     parser.add_argument(
         "--universe", "-u",
-        choices=["sp500", "nasdaq100", "options_friendly", "etfs", "sector_etfs"],
-        default="options_friendly",
-        help="Symbol universe for screener (default: options_friendly)"
+        choices=["sp500", "nasdaq100", "options_friendly", "expanded_options", "etfs", "sector_etfs"],
+        default="expanded_options",
+        help="Symbol universe for screener (default: expanded_options ~300 symbols)"
     )
     parser.add_argument(
         "--debug",
