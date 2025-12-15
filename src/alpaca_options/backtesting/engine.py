@@ -10,7 +10,7 @@ This module provides:
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -420,39 +420,37 @@ class BacktestEngine:
         self._equity_history: list[tuple[datetime, float]] = []
         self._daily_pnl: list[float] = []
 
-    async def run(
+    def _initialize_backtest(
         self,
         strategy: BaseStrategy,
-        underlying_data: pd.DataFrame,
         options_data: dict[datetime, OptionChain],
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-    ) -> BacktestResult:
-        """Run a backtest for a strategy.
+        start_date: Optional[datetime],
+        end_date: Optional[datetime],
+    ) -> tuple[datetime, datetime, list[datetime]]:
+        """Initialize backtest state and prepare timestamps.
 
         Args:
             strategy: The strategy to backtest.
-            underlying_data: DataFrame with OHLCV data indexed by datetime.
             options_data: Dict mapping datetime to OptionChain snapshots.
             start_date: Optional start date override.
             end_date: Optional end date override.
 
         Returns:
-            BacktestResult with metrics and trade history.
+            Tuple of (start, end, timestamps) for the backtest period.
+
+        Raises:
+            ValueError: If no options data available in date range.
         """
-        # Initialize
+        # Reset state
         self._reset()
 
+        # Parse dates with defaults
         start = start_date or datetime.fromisoformat(self._config.default_start_date)
         end = end_date or datetime.fromisoformat(self._config.default_end_date)
 
         logger.info(
             f"Starting backtest for {strategy.name} from {start.date()} to {end.date()}"
         )
-
-        # Only initialize strategy if not already initialized
-        if not strategy.is_initialized:
-            await strategy.initialize(strategy.config)
 
         # Get timestamps to iterate
         timestamps = sorted(
@@ -462,65 +460,87 @@ class BacktestEngine:
         if not timestamps:
             raise ValueError("No options data available in date range")
 
-        last_date = None
+        return start, end, timestamps
 
-        for i, timestamp in enumerate(timestamps):
-            # Get options chain first (to get the symbol)
-            chain = options_data.get(timestamp)
-            if chain is None:
-                continue
+    async def _process_timestamp(
+        self,
+        i: int,
+        timestamp: datetime,
+        timestamps: list[datetime],
+        strategy: BaseStrategy,
+        underlying_data: pd.DataFrame,
+        options_data: dict[datetime, OptionChain],
+        last_date: Optional[date],
+    ) -> Optional[date]:
+        """Process a single timestamp in the backtest simulation.
 
-            # Get market data for this timestamp, using chain's underlying symbol
-            market_data = self._get_market_data(
-                underlying_data, timestamp, symbol=chain.underlying
+        Args:
+            i: Current index in timestamps list.
+            timestamp: Current timestamp to process.
+            timestamps: Full list of timestamps.
+            strategy: Strategy instance.
+            underlying_data: Historical underlying price data.
+            options_data: Historical options chain data.
+            last_date: Previous day's date for tracking daily P&L.
+
+        Returns:
+            Current date for tracking daily P&L transitions.
+        """
+        # Get options chain first (to get the symbol)
+        chain = options_data.get(timestamp)
+        if chain is None:
+            return last_date
+
+        # Get market data for this timestamp, using chain's underlying symbol
+        market_data = self._get_market_data(
+            underlying_data, timestamp, symbol=chain.underlying
+        )
+
+        # Update chain's underlying price with actual market price
+        # (DoltHub doesn't provide this, so we populate it from underlying_data)
+        if market_data and market_data.close > 0:
+            chain.underlying_price = market_data.close
+
+        # Update risk manager
+        self._risk_manager.update_account(
+            equity=self._equity,
+            buying_power=self._cash,
+            daily_pnl=self._get_daily_pnl(timestamp),
+        )
+
+        # === PHASE 2A: GAP RISK MONITORING ===
+        # Check if we're crossing a market close/open boundary (overnight or weekend gap)
+        if self._enable_gap_risk and self._gap_model and i < len(timestamps) - 1:
+            next_timestamp = timestamps[i + 1]
+            if self._gap_model.should_check_gap_risk(timestamp, next_timestamp):
+                await self._process_gap_risk(timestamp, next_timestamp, chain)
+
+        # Process existing positions (check for expiration, assignment)
+        await self._process_positions(timestamp, chain)
+
+        # Pass market data to strategy first (some strategies need this for indicators)
+        if market_data:
+            await strategy.on_market_data(market_data)
+
+        # Get strategy signal
+        signal = await strategy.on_option_chain(chain)
+
+        if signal is not None:
+            logger.info(
+                f"Signal received: {signal.signal_type.value} on {signal.underlying} "
+                f"with {len(signal.legs)} legs"
             )
 
-            # Update chain's underlying price with actual market price
-            # (DoltHub doesn't provide this, so we populate it from underlying_data)
-            if market_data and market_data.close > 0:
-                chain.underlying_price = market_data.close
+            # Check max concurrent positions limit FIRST
+            open_position_count = len(self._open_positions)
+            max_concurrent = self._trading_config.max_concurrent_positions
 
-            # Update risk manager
-            self._risk_manager.update_account(
-                equity=self._equity,
-                buying_power=self._cash,
-                daily_pnl=self._get_daily_pnl(timestamp),
-            )
-
-            # === PHASE 2A: GAP RISK MONITORING ===
-            # Check if we're crossing a market close/open boundary (overnight or weekend gap)
-            if self._enable_gap_risk and self._gap_model and i < len(timestamps) - 1:
-                next_timestamp = timestamps[i + 1]
-                if self._gap_model.should_check_gap_risk(timestamp, next_timestamp):
-                    await self._process_gap_risk(timestamp, next_timestamp, chain)
-
-            # Process existing positions (check for expiration, assignment)
-            await self._process_positions(timestamp, chain)
-
-            # Pass market data to strategy first (some strategies need this for indicators)
-            if market_data:
-                await strategy.on_market_data(market_data)
-
-            # Get strategy signal
-            signal = await strategy.on_option_chain(chain)
-
-            if signal is not None:
+            if open_position_count >= max_concurrent:
                 logger.info(
-                    f"Signal received: {signal.signal_type.value} on {signal.underlying} "
-                    f"with {len(signal.legs)} legs"
+                    f"Signal rejected: at max concurrent positions "
+                    f"({open_position_count}/{max_concurrent})"
                 )
-
-                # Check max concurrent positions limit FIRST
-                open_position_count = len(self._open_positions)
-                max_concurrent = self._trading_config.max_concurrent_positions
-
-                if open_position_count >= max_concurrent:
-                    logger.info(
-                        f"Signal rejected: at max concurrent positions "
-                        f"({open_position_count}/{max_concurrent})"
-                    )
-                    continue
-
+            else:
                 # Build contract map for risk check
                 contracts = self._build_contract_map(signal, chain)
                 logger.debug(f"Contract map size: {len(contracts)} (expected {len(signal.legs)})")
@@ -536,41 +556,61 @@ class BacktestEngine:
                         f"Signal rejected: insufficient buying power "
                         f"(need ${trade_risk:.2f}, have ${available_bp:.2f})"
                     )
-                    continue
-
-                # Check risk manager rules
-                risk_check = self._risk_manager.check_signal_risk(signal, contracts)
-                logger.debug(f"Risk check result: {risk_check.result}, passed={risk_check.passed}, violations={len(risk_check.violations)}, warnings={len(risk_check.warnings)}")
-
-                # Accept both PASSED and WARNING (warnings are informational, not blocking)
-                if risk_check.passed or risk_check.has_warnings:
-                    # Log warnings if present
-                    if risk_check.has_warnings:
-                        logger.info(f"Trade accepted with {len(risk_check.warnings)} warnings")
-
-                    # Reserve buying power for this trade
-                    self._buying_power -= trade_risk
-                    self._collateral_in_use += trade_risk
-                    logger.info(f"Executing trade with risk ${trade_risk:.2f}")
-                    await self._execute_signal(signal, chain, timestamp, trade_risk)
                 else:
-                    logger.info(
-                        f"Signal rejected by risk manager: {risk_check.violations}"
-                    )
+                    # Check risk manager rules
+                    risk_check = self._risk_manager.check_signal_risk(signal, contracts)
+                    logger.debug(f"Risk check result: {risk_check.result}, passed={risk_check.passed}, violations={len(risk_check.violations)}, warnings={len(risk_check.warnings)}")
 
-            # Record equity
-            current_equity = self._calculate_equity(chain)
-            self._equity = current_equity
-            self._peak_equity = max(self._peak_equity, current_equity)
-            self._equity_history.append((timestamp, current_equity))
+                    # Accept both PASSED and WARNING (warnings are informational, not blocking)
+                    if risk_check.passed or risk_check.has_warnings:
+                        # Log warnings if present
+                        if risk_check.has_warnings:
+                            logger.info(f"Trade accepted with {len(risk_check.warnings)} warnings")
 
-            # Track daily P&L
-            current_date = timestamp.date()
-            if last_date is not None and current_date != last_date:
-                daily_pnl = self._calculate_daily_pnl(current_date)
-                self._daily_pnl.append(daily_pnl)
-            last_date = current_date
+                        # Reserve buying power for this trade
+                        self._buying_power -= trade_risk
+                        self._collateral_in_use += trade_risk
+                        logger.info(f"Executing trade with risk ${trade_risk:.2f}")
+                        await self._execute_signal(signal, chain, timestamp, trade_risk)
+                    else:
+                        logger.info(
+                            f"Signal rejected by risk manager: {risk_check.violations}"
+                        )
 
+        # Record equity
+        current_equity = self._calculate_equity(chain)
+        self._equity = current_equity
+        self._peak_equity = max(self._peak_equity, current_equity)
+        self._equity_history.append((timestamp, current_equity))
+
+        # Track daily P&L
+        current_date = timestamp.date()
+        if last_date is not None and current_date != last_date:
+            daily_pnl = self._calculate_daily_pnl(current_date)
+            self._daily_pnl.append(daily_pnl)
+
+        return current_date
+
+    async def _finalize_backtest(
+        self,
+        strategy: BaseStrategy,
+        start: datetime,
+        end: datetime,
+        timestamps: list[datetime],
+        options_data: dict[datetime, OptionChain],
+    ) -> BacktestResult:
+        """Finalize backtest and generate results.
+
+        Args:
+            strategy: The strategy instance.
+            start: Backtest start date.
+            end: Backtest end date.
+            timestamps: List of timestamps processed.
+            options_data: Historical options chain data.
+
+        Returns:
+            BacktestResult with metrics, trades, and performance data.
+        """
         # Close any remaining positions at end
         await self._close_all_positions(timestamps[-1], options_data.get(timestamps[-1]))
 
@@ -596,6 +636,52 @@ class BacktestEngine:
             daily_returns=daily_returns,
             config=self._config.model_dump(),
         )
+
+    async def run(
+        self,
+        strategy: BaseStrategy,
+        underlying_data: pd.DataFrame,
+        options_data: dict[datetime, OptionChain],
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> BacktestResult:
+        """Run a backtest for a strategy.
+
+        Args:
+            strategy: The strategy to backtest.
+            underlying_data: DataFrame with OHLCV data indexed by datetime.
+            options_data: Dict mapping datetime to OptionChain snapshots.
+            start_date: Optional start date override.
+            end_date: Optional end date override.
+
+        Returns:
+            BacktestResult with metrics and trade history.
+        """
+        # Initialize backtest state
+        start, end, timestamps = self._initialize_backtest(
+            strategy, options_data, start_date, end_date
+        )
+
+        # Initialize strategy if needed
+        if not strategy.is_initialized:
+            await strategy.initialize(strategy.config)
+
+        last_date = None
+
+        # Run simulation for each timestamp
+        for i, timestamp in enumerate(timestamps):
+            last_date = await self._process_timestamp(
+                i=i,
+                timestamp=timestamp,
+                timestamps=timestamps,
+                strategy=strategy,
+                underlying_data=underlying_data,
+                options_data=options_data,
+                last_date=last_date,
+            )
+
+        # Finalize and generate results
+        return await self._finalize_backtest(strategy, start, end, timestamps, options_data)
 
     def _reset(self) -> None:
         """Reset backtest state."""
@@ -668,22 +754,28 @@ class BacktestEngine:
                     break
         return contracts
 
-    async def _execute_signal(
+    def _check_order_fillability(
         self,
         signal: OptionSignal,
         chain: OptionChain,
         timestamp: datetime,
-        collateral_required: float = 0.0,
-    ) -> None:
-        """Execute a trading signal with realistic fill simulation.
+        collateral_required: float,
+    ) -> bool:
+        """Check if order will fill based on liquidity and market conditions.
 
-        Includes:
-        - Liquidity check (reject if spread too wide or OI too low)
-        - Fill probability based on market conditions
-        - Partial rejection (order not filled)
+        Uses either sophisticated fill probability model (Phase 2A) or legacy
+        basic liquidity checks depending on configuration.
+
+        Args:
+            signal: The option signal to execute.
+            chain: Current options chain.
+            timestamp: Current timestamp.
+            collateral_required: Collateral reserved for this order.
+
+        Returns:
+            True if order should fill, False if it should be rejected.
         """
         # === PHASE 2A: FILL PROBABILITY CHECK ===
-        # Replace basic liquidity check with sophisticated fill probability model
         if self._enable_fill_probability and self._fill_model:
             # Get VIX for fill context (default to 20 if not available)
             vix = 20.0  # TODO: Load actual VIX data from market data
@@ -699,7 +791,7 @@ class BacktestEngine:
                     logger.debug(f"Order rejected: contract {leg.contract_symbol} not found")
                     self._buying_power += collateral_required
                     self._collateral_in_use -= collateral_required
-                    return
+                    return False
 
                 # Calculate bid-ask spread percentage
                 if contract.bid > 0 and contract.ask > 0 and contract.mid_price > 0:
@@ -728,9 +820,11 @@ class BacktestEngine:
                     self._fill_rejections += 1
                     self._buying_power += collateral_required
                     self._collateral_in_use -= collateral_required
-                    return
+                    return False
 
-        # If Phase 2A disabled, use legacy basic liquidity checks
+            return True
+
+        # === LEGACY: BASIC LIQUIDITY CHECKS ===
         elif not self._enable_fill_probability:
             import random
             for leg in signal.legs:
@@ -744,7 +838,7 @@ class BacktestEngine:
                     logger.debug(f"Order rejected: contract {leg.contract_symbol} not found")
                     self._buying_power += collateral_required
                     self._collateral_in_use -= collateral_required
-                    return
+                    return False
 
                 # Legacy: Check liquidity - reject if spread is too wide
                 if contract.bid > 0 and contract.ask > 0:
@@ -754,7 +848,7 @@ class BacktestEngine:
                             logger.debug(f"Order rejected: spread too wide ({spread_pct:.1%})")
                             self._buying_power += collateral_required
                             self._collateral_in_use -= collateral_required
-                            return
+                            return False
 
                 # Legacy: Check open interest - reject if too low
                 if contract.open_interest < 50:
@@ -762,8 +856,28 @@ class BacktestEngine:
                         logger.debug(f"Order rejected: low OI ({contract.open_interest})")
                         self._buying_power += collateral_required
                         self._collateral_in_use -= collateral_required
-                        return
+                        return False
 
+            return True
+
+        # If neither path is taken, allow fill
+        return True
+
+    def _execute_and_record_trade(
+        self,
+        signal: OptionSignal,
+        chain: OptionChain,
+        timestamp: datetime,
+        collateral_required: float,
+    ) -> None:
+        """Execute trade with slippage/commission and create trade record.
+
+        Args:
+            signal: The option signal to execute.
+            chain: Current options chain.
+            timestamp: Execution timestamp.
+            collateral_required: Collateral reserved for this trade.
+        """
         self._trade_counter += 1
         trade_id = f"BT-{self._trade_counter:06d}"
 
@@ -853,6 +967,27 @@ class BacktestEngine:
             f"collateral=${collateral_required:.2f}"
         )
 
+    async def _execute_signal(
+        self,
+        signal: OptionSignal,
+        chain: OptionChain,
+        timestamp: datetime,
+        collateral_required: float = 0.0,
+    ) -> None:
+        """Execute a trading signal with realistic fill simulation.
+
+        Includes:
+        - Liquidity check (reject if spread too wide or OI too low)
+        - Fill probability based on market conditions
+        - Partial rejection (order not filled)
+        """
+        # Check if order will fill (liquidity and market conditions)
+        if not self._check_order_fillability(signal, chain, timestamp, collateral_required):
+            return
+
+        # Execute trade with slippage/commission and record
+        self._execute_and_record_trade(signal, chain, timestamp, collateral_required)
+
     async def _process_gap_risk(
         self,
         current_time: datetime,
@@ -929,6 +1064,212 @@ class BacktestEngine:
                     f"(P&L={pnl_pct:.1%}, crossing {current_time.time()} -> {next_bar_time.time()})"
                 )
 
+    def _check_profit_loss_dte_exits(
+        self,
+        trade: BacktestTrade,
+        trade_id: str,
+        timestamp: datetime,
+        chain: OptionChain,
+    ) -> tuple[bool, TradeStatus, float]:
+        """Check if position should be closed due to profit target, stop loss, or DTE.
+
+        Args:
+            trade: The trade to check.
+            trade_id: Trade identifier.
+            timestamp: Current timestamp.
+            chain: Current options chain.
+
+        Returns:
+            Tuple of (should_close, close_status, current_pnl).
+        """
+        should_close = False
+        close_status = TradeStatus.CLOSED
+
+        # Get management parameters from metadata
+        profit_target = trade.metadata.get("profit_target")
+        stop_loss = trade.metadata.get("stop_loss")
+        close_dte = trade.metadata.get("close_dte", 7)
+
+        # Calculate current unrealized P&L
+        current_pnl = 0.0
+        for leg in trade.legs:
+            contract = None
+            for c in chain.contracts:
+                if c.symbol == leg.contract_symbol:
+                    contract = c
+                    break
+            if contract:
+                entry_price = trade.entry_prices.get(leg.contract_symbol, 0)
+                current_price = contract.mid_price
+                if leg.side == "sell":
+                    current_pnl += (entry_price - current_price) * leg.quantity * 100
+                else:
+                    current_pnl += (current_price - entry_price) * leg.quantity * 100
+
+        # Check profit target
+        if profit_target is not None and current_pnl >= profit_target:
+            should_close = True
+            logger.info(
+                f"Profit target reached for {trade_id}: "
+                f"P&L ${current_pnl:.2f} >= target ${profit_target:.2f}"
+            )
+
+        # Check stop loss
+        if not should_close and stop_loss is not None and current_pnl <= -stop_loss:
+            should_close = True
+            logger.info(
+                f"Stop loss triggered for {trade_id}: "
+                f"P&L ${current_pnl:.2f} <= stop -${stop_loss:.2f}"
+            )
+
+        # Check DTE-based exit
+        if not should_close:
+            for leg in trade.legs:
+                dte = (leg.expiration - timestamp).days
+                if dte <= close_dte:
+                    should_close = True
+                    logger.info(
+                        f"DTE exit for {trade_id}: DTE={dte} <= close_dte={close_dte}"
+                    )
+                    break
+
+        return should_close, close_status, current_pnl
+
+    def _check_expiration_and_assignment(
+        self,
+        trade: BacktestTrade,
+        timestamp: datetime,
+        chain: OptionChain,
+    ) -> tuple[bool, TradeStatus]:
+        """Check if position should be closed due to expiration or early assignment.
+
+        Args:
+            trade: The trade to check.
+            timestamp: Current timestamp.
+            chain: Current options chain.
+
+        Returns:
+            Tuple of (should_close, close_status).
+        """
+        import random
+
+        should_close = False
+        close_status = TradeStatus.EXPIRED
+
+        for leg in trade.legs:
+            # Check expiration
+            if leg.expiration.date() <= timestamp.date():
+                should_close = True
+                close_status = TradeStatus.EXPIRED
+                break
+
+            # Find current contract
+            contract = None
+            for c in chain.contracts:
+                if c.symbol == leg.contract_symbol:
+                    contract = c
+                    break
+
+            if contract is None:
+                continue
+
+            # Check early assignment risk for short ITM options
+            if leg.side == "sell" and contract.delta is not None:
+                delta_abs = abs(contract.delta)
+
+                if delta_abs > self._early_assignment_threshold:
+                    dte = (leg.expiration - timestamp).days
+
+                    # Calculate assignment probability
+                    threshold = self._early_assignment_threshold
+                    daily_assignment_prob = 0.02 * (delta_abs - threshold) / (1.0 - threshold)
+
+                    # Higher probability near expiration
+                    if dte < 7:
+                        daily_assignment_prob *= 2.0
+                    elif dte < 14:
+                        daily_assignment_prob *= 1.5
+
+                    if random.random() < daily_assignment_prob:
+                        should_close = True
+                        close_status = TradeStatus.ASSIGNED
+                        logger.info(
+                            f"Early assignment triggered for {leg.contract_symbol} "
+                            f"(delta={contract.delta:.2f}, DTE={dte})"
+                        )
+                        break
+
+        return should_close, close_status
+
+    def _calculate_gap_risk_adjustment(
+        self,
+        trade: BacktestTrade,
+        timestamp: datetime,
+        chain: OptionChain,
+    ) -> float:
+        """Calculate adverse P&L adjustment due to overnight gap risk.
+
+        Args:
+            trade: The trade to check.
+            timestamp: Current timestamp.
+            chain: Current options chain.
+
+        Returns:
+            Adverse P&L adjustment amount (negative for losses).
+        """
+        import random
+
+        adverse_pnl_adjustment = 0.0
+
+        # Check if this is a new day
+        is_new_day = (
+            len(self._equity_history) > 0
+            and self._equity_history[-1][0].date() != timestamp.date()
+        )
+
+        if not is_new_day:
+            return 0.0
+
+        # Check for gap risk event
+        if random.random() >= self._gap_risk_probability:
+            return 0.0
+
+        # Calculate gap severity
+        gap_range = self._gap_severity_max - self._gap_severity_min
+        gap_severity = self._gap_severity_min + random.random() * gap_range
+
+        # Apply gap to each leg
+        for leg in trade.legs:
+            contract = None
+            for c in chain.contracts:
+                if c.symbol == leg.contract_symbol:
+                    contract = c
+                    break
+
+            if contract is None:
+                continue
+
+            entry_price = trade.entry_prices.get(leg.contract_symbol, 0)
+            current_mid = contract.mid_price
+
+            if leg.side == "sell":
+                # Short option moved against us
+                adverse_move = (current_mid - entry_price) * gap_severity
+                if adverse_move > 0:
+                    adverse_pnl_adjustment -= adverse_move * leg.quantity * 100
+            else:
+                # Long option lost value
+                adverse_move = (entry_price - current_mid) * gap_severity
+                if adverse_move > 0:
+                    adverse_pnl_adjustment -= adverse_move * leg.quantity * 100
+
+        if adverse_pnl_adjustment < -50:
+            logger.info(
+                f"Gap risk event: adverse P&L adjustment: ${adverse_pnl_adjustment:.2f}"
+            )
+
+        return adverse_pnl_adjustment
+
     async def _process_positions(
         self, timestamp: datetime, chain: OptionChain
     ) -> None:
@@ -940,153 +1281,27 @@ class BacktestEngine:
         - Gap risk causing adverse moves
         - Overnight/weekend gaps
         """
-        import random
-
         positions_to_close = []
         positions_with_adverse_pnl = {}
 
         for trade_id, trade in self._open_positions.items():
-            should_close = False
-            close_status = TradeStatus.CLOSED
-            adverse_pnl_adjustment = 0.0
+            # Check profit target, stop loss, and DTE exits
+            should_close, close_status, current_pnl = self._check_profit_loss_dte_exits(
+                trade, trade_id, timestamp, chain
+            )
 
-            # === PROFIT TARGET / STOP LOSS / DTE MANAGEMENT ===
-            # Check trade metadata for management parameters
-            profit_target = trade.metadata.get("profit_target")
-            stop_loss = trade.metadata.get("stop_loss")
-            close_dte = trade.metadata.get("close_dte", 7)  # Default to 7 DTE
-
-            # Calculate current unrealized P&L for this trade
-            current_pnl = 0.0
-            for leg in trade.legs:
-                contract = None
-                for c in chain.contracts:
-                    if c.symbol == leg.contract_symbol:
-                        contract = c
-                        break
-                if contract:
-                    entry_price = trade.entry_prices.get(leg.contract_symbol, 0)
-                    current_price = contract.mid_price
-                    if leg.side == "sell":
-                        # Sold option: profit if current price < entry
-                        current_pnl += (entry_price - current_price) * leg.quantity * 100
-                    else:
-                        # Bought option: profit if current price > entry
-                        current_pnl += (current_price - entry_price) * leg.quantity * 100
-
-            # Check profit target (close to lock in gains)
-            if profit_target is not None and current_pnl >= profit_target:
-                should_close = True
-                close_status = TradeStatus.CLOSED
-                logger.info(
-                    f"Profit target reached for {trade_id}: "
-                    f"P&L ${current_pnl:.2f} >= target ${profit_target:.2f}"
-                )
-
-            # Check stop loss (close to limit losses)
-            if not should_close and stop_loss is not None and current_pnl <= -stop_loss:
-                should_close = True
-                close_status = TradeStatus.CLOSED
-                logger.info(
-                    f"Stop loss triggered for {trade_id}: "
-                    f"P&L ${current_pnl:.2f} <= stop -${stop_loss:.2f}"
-                )
-
-            # Check DTE-based exit (close at 21 DTE to avoid gamma risk)
+            # Check expiration and early assignment if not already closing
             if not should_close:
-                for leg in trade.legs:
-                    dte = (leg.expiration - timestamp).days
-                    if dte <= close_dte:
-                        should_close = True
-                        close_status = TradeStatus.CLOSED
-                        logger.info(
-                            f"DTE exit for {trade_id}: DTE={dte} <= close_dte={close_dte}"
-                        )
-                        break
-
-            for leg in trade.legs:
-                # Check if any leg is expiring
-                if leg.expiration.date() <= timestamp.date():
-                    should_close = True
-                    close_status = TradeStatus.EXPIRED
-                    break
-
-                # Find current contract data
-                contract = None
-                for c in chain.contracts:
-                    if c.symbol == leg.contract_symbol:
-                        contract = c
-                        break
-
-                if contract is None:
-                    continue
-
-                # === EARLY ASSIGNMENT RISK ===
-                # Short ITM options near ex-dividend or deep ITM can be assigned
-                if leg.side == "sell" and contract.delta is not None:
-                    delta_abs = abs(contract.delta)
-
-                    # Deep ITM has assignment risk (use configurable threshold)
-                    if delta_abs > self._early_assignment_threshold:
-                        dte = (leg.expiration - timestamp).days
-
-                        # Assignment probability increases with ITM-ness and decreases with DTE
-                        # Base probability: 2% per day for very deep ITM
-                        threshold = self._early_assignment_threshold
-                        daily_assignment_prob = 0.02 * (delta_abs - threshold) / (1.0 - threshold)
-
-                        # Higher probability near expiration
-                        if dte < 7:
-                            daily_assignment_prob *= 2.0
-                        elif dte < 14:
-                            daily_assignment_prob *= 1.5
-
-                        if random.random() < daily_assignment_prob:
-                            should_close = True
-                            close_status = TradeStatus.ASSIGNED
-                            logger.info(
-                                f"Early assignment triggered for {leg.contract_symbol} "
-                                f"(delta={contract.delta:.2f}, DTE={dte})"
-                            )
-                            break
-
-                # === GAP RISK / ADVERSE MOVE ===
-                # Simulate overnight gaps and intraday adverse moves
-                # This creates losing trades that the synthetic data misses
-                is_new_day = (
-                    len(self._equity_history) > 0
-                    and self._equity_history[-1][0].date() != timestamp.date()
+                should_close, close_status = self._check_expiration_and_assignment(
+                    trade, timestamp, chain
                 )
 
-                if is_new_day:
-                    # Overnight gap risk: configurable probability of significant adverse move
-                    # Default 1.5% = roughly 4-5 gap events per year
-                    if random.random() < self._gap_risk_probability:
-                        # Calculate potential max loss for this spread
-                        entry_price = trade.entry_prices.get(leg.contract_symbol, 0)
-                        current_mid = contract.mid_price
+            # Calculate gap risk adjustment (applied even if position is closing)
+            adverse_pnl_adjustment = self._calculate_gap_risk_adjustment(
+                trade, timestamp, chain
+            )
 
-                        # Gap causes configurable portion of max loss to be realized
-                        gap_range = self._gap_severity_max - self._gap_severity_min
-                        gap_severity = self._gap_severity_min + random.random() * gap_range
-
-                        if leg.side == "sell":
-                            # Short option moved against us
-                            adverse_move = (current_mid - entry_price) * gap_severity
-                            if adverse_move > 0:  # Loss on short
-                                adverse_pnl_adjustment -= adverse_move * leg.quantity * 100
-                        else:
-                            # Long option lost value
-                            adverse_move = (entry_price - current_mid) * gap_severity
-                            if adverse_move > 0:  # Loss on long
-                                adverse_pnl_adjustment -= adverse_move * leg.quantity * 100
-
-                        if adverse_pnl_adjustment < -50:  # Only log significant moves
-                            logger.info(
-                                f"Gap risk event: {leg.contract_symbol} "
-                                f"adverse P&L adjustment: ${adverse_pnl_adjustment:.2f}"
-                            )
-
+            # Collect positions to close and adverse P&L adjustments
             if should_close:
                 positions_to_close.append((trade_id, close_status))
             elif adverse_pnl_adjustment != 0:
