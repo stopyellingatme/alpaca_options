@@ -51,6 +51,29 @@ risk:
   min_open_interest: 100
   max_bid_ask_spread_percent: 5
 
+# Earnings Calendar Configuration
+earnings:
+  enabled: true
+  buffer_days: 7
+  cache_ttl_days: 1
+
+# SEC Filings Analysis Configuration
+sec_filings:
+  enabled: true
+  cache_ttl_days: 7
+
+  # Risk thresholds
+  high_risk_threshold: 7.0  # Skip if risk >= 7.0/10
+  low_health_threshold: 5.0  # Skip if health < 5.0/10
+  insider_sentiment_threshold: -0.3  # Skip if sentiment < -0.3
+  bankruptcy_risk_threshold: 7.0  # Skip if bankruptcy risk >= 7.0/10
+
+  # Filtering behavior
+  skip_high_risk: true
+  skip_negative_insiders: true
+  skip_auditor_warnings: true
+  skip_bankruptcy_risk: true
+
 # Capital Tier Configuration
 # Strategies are automatically enabled/disabled based on account capital
 capital_tiers:

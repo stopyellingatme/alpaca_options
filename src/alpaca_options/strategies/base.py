@@ -2,11 +2,15 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from alpaca_options.strategies.criteria import StrategyCriteria
+
+if TYPE_CHECKING:
+    from alpaca_options.data.earnings_calendar import EarningsCalendar
+    from alpaca_options.data.sec_filings import SECFilingsAnalyzer
 
 
 class SignalType(Enum):
@@ -194,6 +198,13 @@ class BaseStrategy(ABC):
     def __init__(self) -> None:
         self._is_initialized = False
         self._config: dict[str, Any] = {}
+        self._earnings_calendar: Optional["EarningsCalendar"] = None
+        self._earnings_buffer_days: int = 7  # Default: avoid positions 7 days before earnings
+        self._sec_filings_analyzer: Optional["SECFilingsAnalyzer"] = None
+        self._sec_risk_threshold: float = 7.0  # Default: skip if risk score >= 7.0
+        self._sec_health_threshold: float = 5.0  # Default: skip if health < 5.0
+        self._insider_sentiment_threshold: float = -0.3  # Default: skip if sentiment < -0.3
+        self._bankruptcy_risk_threshold: float = 7.0  # Default: skip if bankruptcy risk >= 7.0
 
     @property
     @abstractmethod
@@ -216,6 +227,100 @@ class BaseStrategy(ABC):
     def config(self) -> dict[str, Any]:
         """Get strategy configuration."""
         return self._config
+
+    def set_earnings_calendar(self, calendar: "EarningsCalendar") -> None:
+        """Set earnings calendar instance.
+
+        Args:
+            calendar: EarningsCalendar instance for checking earnings dates.
+        """
+        self._earnings_calendar = calendar
+
+    def set_earnings_buffer_days(self, days: int) -> None:
+        """Set earnings buffer period in days.
+
+        Args:
+            days: Number of days before earnings to avoid opening positions.
+        """
+        self._earnings_buffer_days = days
+
+    def has_earnings_risk(self, symbol: str, dte: int, reference_date: Optional[date] = None) -> bool:
+        """Check if position would be open during earnings.
+
+        Args:
+            symbol: Stock ticker symbol.
+            dte: Days to expiration for the position.
+            reference_date: Reference date (default: today).
+
+        Returns:
+            True if earnings within position lifetime, False otherwise.
+        """
+        if self._earnings_calendar is None:
+            return False  # No calendar = no filtering
+
+        # Check if earnings within position lifetime
+        return self._earnings_calendar.has_earnings_within(
+            symbol, days=dte, reference_date=reference_date
+        )
+
+    def set_sec_filings_analyzer(self, analyzer: "SECFilingsAnalyzer") -> None:
+        """Set SEC filings analyzer instance.
+
+        Args:
+            analyzer: SECFilingsAnalyzer instance for checking risk factors and financial health.
+        """
+        self._sec_filings_analyzer = analyzer
+
+    def set_sec_risk_threshold(self, threshold: float) -> None:
+        """Set SEC risk score threshold.
+
+        Args:
+            threshold: Risk score threshold (0-10, higher = riskier). Skip symbols with score >= threshold.
+        """
+        self._sec_risk_threshold = threshold
+
+    def set_sec_health_threshold(self, threshold: float) -> None:
+        """Set SEC financial health threshold.
+
+        Args:
+            threshold: Health score threshold (0-10, higher = healthier). Skip symbols with score < threshold.
+        """
+        self._sec_health_threshold = threshold
+
+    def has_sec_risk(self, symbol: str) -> bool:
+        """Check if symbol has high SEC-identified risk factors.
+
+        Args:
+            symbol: Stock ticker symbol.
+
+        Returns:
+            True if symbol should be avoided due to high risk, low financial health,
+            negative insider activity, or bankruptcy risk, False otherwise.
+        """
+        if self._sec_filings_analyzer is None:
+            return False  # No analyzer = no filtering
+
+        # Check risk score
+        risk_score = self._sec_filings_analyzer.get_risk_score(symbol)
+        if risk_score and risk_score.overall_score >= self._sec_risk_threshold:
+            return True
+
+        # Check financial health
+        health = self._sec_filings_analyzer.get_financial_health(symbol)
+        if health and health.health_score < self._sec_health_threshold:
+            return True
+
+        # Check insider sentiment
+        sentiment = self._sec_filings_analyzer.get_insider_sentiment(symbol)
+        if sentiment and sentiment.sentiment_score < self._insider_sentiment_threshold:
+            return True
+
+        # Check cash flow health and bankruptcy risk
+        cash_flow = self._sec_filings_analyzer.get_cash_flow_health(symbol)
+        if cash_flow and cash_flow.bankruptcy_risk_score >= self._bankruptcy_risk_threshold:
+            return True
+
+        return False
 
     @abstractmethod
     async def initialize(self, config: dict[str, Any]) -> None:

@@ -184,6 +184,16 @@ class VerticalSpreadStrategy(BaseStrategy):
         if chain.underlying not in self._underlyings:
             return None
 
+        # Check for earnings risk
+        if self.has_earnings_risk(chain.underlying, self._max_dte):
+            logger.info(f"[{chain.underlying}] Skipping: earnings within {self._max_dte} day window")
+            return None
+
+        # Check for SEC risk (10-K, insider trading, auditor warnings, cash flow)
+        if self.has_sec_risk(chain.underlying):
+            logger.info(f"[{chain.underlying}] Skipping: SEC risk detected")
+            return None
+
         # Determine market direction based on cached data
         direction = self._determine_direction(chain.underlying)
         if direction is None:
