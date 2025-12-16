@@ -44,7 +44,7 @@ class ScannerConfig:
     mode: ScanMode = ScanMode.HYBRID
 
     # Universe selection
-    universe_type: UniverseType = UniverseType.OPTIONS_FRIENDLY
+    universe_type: UniverseType = UniverseType.EXPANDED_OPTIONS  # ~300 symbols for broad coverage
     custom_symbols: list[str] = field(default_factory=list)
 
     # Result limits
