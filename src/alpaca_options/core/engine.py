@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from alpaca_options.core.config import Settings
 from alpaca_options.core.events import Event, EventBus, EventType, get_event_bus
+from alpaca_options.data.sec_filings import SECFilingsAnalyzer
 from alpaca_options.strategies import BaseStrategy, OptionSignal
 from alpaca_options.strategies.registry import StrategyRegistry, get_registry
 
@@ -82,6 +83,9 @@ class TradingEngine:
         self._trading_manager = None
         self._risk_manager = None
 
+        # SEC filings analyzer (initialized at startup)
+        self._sec_analyzer = SECFilingsAnalyzer(cache_ttl_days=7)
+
         # Tasks
         self._main_task: Optional[asyncio.Task[None]] = None
         self._signal_processor_task: Optional[asyncio.Task[None]] = None
@@ -154,6 +158,9 @@ class TradingEngine:
 
         logger.info("Starting trading engine...")
         self._running = True
+
+        # Log SEC filings analyzer initialization
+        logger.info("SEC filings analyzer initialized and ready for strategy injection")
 
         # Start event bus
         await self.event_bus.start()
@@ -299,7 +306,10 @@ class TradingEngine:
                 )
                 if instance:
                     self._active_strategies[name] = instance
-                    logger.info(f"Initialized strategy: {name}")
+
+                    # Inject SEC filings analyzer into strategy
+                    instance.set_sec_filings_analyzer(self._sec_analyzer)
+                    logger.info(f"Initialized strategy: {name} (SEC analyzer injected)")
 
                     await self.event_bus.publish(
                         Event(

@@ -18,6 +18,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from alpaca_options.core.config import BacktestConfig, RiskConfig, TradingConfig
+from alpaca_options.data.sec_filings import SECFilingsAnalyzer
 from alpaca_options.risk.manager import RiskManager
 from alpaca_options.strategies.base import (
     BaseStrategy,
@@ -407,6 +408,9 @@ class BacktestEngine:
         self._gap_severity_min = getattr(config.execution, 'gap_severity_min', 0.3)
         self._gap_severity_max = getattr(config.execution, 'gap_severity_max', 0.7)
 
+        # SEC filings analyzer (initialized at construction)
+        self._sec_analyzer = SECFilingsAnalyzer(cache_ttl_days=7)
+
         # Backtest state
         self._equity: float = config.initial_capital
         self._starting_equity: float = config.initial_capital
@@ -443,6 +447,10 @@ class BacktestEngine:
         """
         # Reset state
         self._reset()
+
+        # Inject SEC filings analyzer into strategy
+        strategy.set_sec_filings_analyzer(self._sec_analyzer)
+        logger.info(f"SEC filings analyzer injected into {strategy.name}")
 
         # Parse dates with defaults
         start = start_date or datetime.fromisoformat(self._config.default_start_date)
