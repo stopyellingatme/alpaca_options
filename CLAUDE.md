@@ -2,6 +2,10 @@
 
 @Context.md
 
+> **IMPORTANT: API Credentials Already Configured**
+>
+> The Alpaca API credentials are already set up in the `.env` file in the project root. DO NOT ask the user to configure API keys or create a `.env` file - it already exists and contains valid credentials. All scripts automatically load these credentials using `python-dotenv`.
+
 # Alpaca Options Trading Bot
 
 An intelligent, automated options trading system that identifies and executes high-probability trades using the Alpaca API. The system combines technical analysis, options screening, and risk management to find optimal trade opportunities across multiple strategies tailored to different account sizes.

@@ -3,8 +3,14 @@
 import asyncio
 import os
 from datetime import datetime
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from alpaca_options.core.config import load_config
+
+# Load environment variables from .env file
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 
 async def verify_account() -> None:
