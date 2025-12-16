@@ -796,6 +796,45 @@ class TradingEngine:
             signal: The signal to execute.
         """
         try:
+            # DRY-RUN MODE: Log what would be placed without actually submitting orders
+            if self.settings.trading.dry_run:
+                logger.info(
+                    "[DRY-RUN] Would place order - Strategy: %s, Type: %s, Underlying: %s, Legs: %d",
+                    signal.strategy_name,
+                    signal.signal_type.value,
+                    signal.underlying,
+                    len(signal.legs)
+                )
+
+                for i, leg in enumerate(signal.legs, 1):
+                    logger.info(
+                        "[DRY-RUN] Leg %d: %s %d contracts of %s @ strike %s (expires %s)",
+                        i,
+                        leg.action.upper(),
+                        leg.quantity,
+                        leg.option_type.upper() if hasattr(leg, 'option_type') else leg.symbol,
+                        leg.strike if hasattr(leg, 'strike') else "N/A",
+                        leg.expiration.date() if hasattr(leg, 'expiration') else "N/A"
+                    )
+
+                # Publish dry-run signal event for dashboard
+                await self.event_bus.publish(
+                    Event(
+                        event_type=EventType.SIGNAL_GENERATED,
+                        data={
+                            "dry_run": True,
+                            "signal_type": signal.signal_type.value,
+                            "underlying": signal.underlying,
+                            "strategy": signal.strategy_name,
+                            "legs": len(signal.legs),
+                            "confidence": signal.confidence,
+                        },
+                        source="TradingEngine",
+                    )
+                )
+                return  # Exit without submitting actual orders
+
+            # LIVE MODE: Submit actual orders
             order_type = self.settings.trading.default_order_type
 
             results = await self.trading_manager.submit_signal(

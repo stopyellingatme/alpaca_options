@@ -127,7 +127,7 @@ def display_startup_info(settings=None, screener_enabled: bool = False, universe
     console.print()
 
 
-async def run_paper_trading(screener_enabled: bool = False, universe: str = "options_friendly"):
+async def run_paper_trading(screener_enabled: bool = False, universe: str = "options_friendly", dry_run: bool = False):
     """Run the paper trading bot."""
     from alpaca_options.core.config import load_config
     from alpaca_options.core.engine import TradingEngine
@@ -138,6 +138,11 @@ async def run_paper_trading(screener_enabled: bool = False, universe: str = "opt
 
     # Ensure paper trading mode
     settings.alpaca.paper = True
+
+    # Enable dry-run if requested
+    if dry_run:
+        settings.trading.dry_run = True
+        console.print("[yellow]DRY-RUN MODE: Signals will be generated but orders will NOT be submitted[/yellow]")
 
     # Enable screener if requested
     if screener_enabled:
@@ -232,7 +237,7 @@ async def run_paper_trading(screener_enabled: bool = False, universe: str = "opt
         console.print("[green]Engine stopped.[/green]")
 
 
-async def run_with_dashboard(screener_enabled: bool = False, universe: str = "options_friendly"):
+async def run_with_dashboard(screener_enabled: bool = False, universe: str = "options_friendly", dry_run: bool = False):
     """Run the paper trading bot with the TUI dashboard."""
     from alpaca_options.core.config import load_config
     from alpaca_options.core.engine import TradingEngine
@@ -244,6 +249,11 @@ async def run_with_dashboard(screener_enabled: bool = False, universe: str = "op
 
     # Ensure paper trading mode
     settings.alpaca.paper = True
+
+    # Enable dry-run if requested
+    if dry_run:
+        settings.trading.dry_run = True
+        console.print("[yellow]DRY-RUN MODE: Signals will be generated but orders will NOT be submitted[/yellow]")
 
     # Enable screener if requested
     if screener_enabled:
@@ -286,6 +296,11 @@ def main():
         choices=["sp500", "nasdaq100", "options_friendly", "expanded_options", "etfs", "sector_etfs"],
         default="expanded_options",
         help="Symbol universe for screener (default: expanded_options ~300 symbols)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Generate signals but don't submit actual orders (simulation mode)"
     )
     parser.add_argument(
         "--debug",
@@ -332,11 +347,13 @@ def main():
             asyncio.run(run_with_dashboard(
                 screener_enabled=args.screener,
                 universe=args.universe,
+                dry_run=args.dry_run,
             ))
         else:
             asyncio.run(run_paper_trading(
                 screener_enabled=args.screener,
                 universe=args.universe,
+                dry_run=args.dry_run,
             ))
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted by user[/yellow]")

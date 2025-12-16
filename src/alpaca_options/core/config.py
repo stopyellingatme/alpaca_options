@@ -25,6 +25,7 @@ class TradingConfig(BaseModel):
     """Trading configuration."""
 
     enabled: bool = True
+    dry_run: bool = False  # If True, generate signals but don't submit orders
     max_positions: int = 10
     max_concurrent_positions: int = 3  # Max positions open at same time
     max_order_value: float = 5000
