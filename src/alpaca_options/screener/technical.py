@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, List
 
 import pandas as pd
 
@@ -12,6 +12,7 @@ from alpaca_options.screener.base import (
     ScreenerType,
     ScreeningCriteria,
 )
+from alpaca_options.screener.data_cache import BarsDataCache
 from alpaca_options.screener.filters import (
     calculate_atr,
     calculate_average_volume,
@@ -143,10 +144,27 @@ class TechnicalScreener(BaseScreener):
         super().__init__(criteria, cache_ttl_seconds)
         self._data_client = data_client
         self._lookback_days = lookback_days
+        self._bars_cache = BarsDataCache(ttl_seconds=cache_ttl_seconds)
 
     @property
     def screener_type(self) -> ScreenerType:
         return ScreenerType.TECHNICAL
+
+    async def _prefetch_data(self, symbols: List[str]) -> None:
+        """Prefetch bars data for all symbols using batched API calls.
+
+        This is called by BaseScreener.scan() before screening begins.
+        Fetches and caches bars for all symbols in optimized batches.
+
+        Args:
+            symbols: List of symbols to prefetch.
+        """
+        if not symbols:
+            return
+
+        logger.info(f"Prefetching bars data for {len(symbols)} symbols...")
+        await self._fetch_bars_batch(symbols)
+        logger.info("Bars data prefetch complete")
 
     async def screen_symbol(self, symbol: str) -> ScreenerResult:
         """Screen a single symbol using technical analysis.
@@ -356,7 +374,7 @@ class TechnicalScreener(BaseScreener):
             )
 
     async def _fetch_bars(self, symbol: str) -> Optional[list]:
-        """Fetch historical bar data for a symbol.
+        """Fetch historical bar data for a symbol with caching.
 
         Args:
             symbol: Stock symbol.
@@ -364,6 +382,16 @@ class TechnicalScreener(BaseScreener):
         Returns:
             List of bar objects or None on failure.
         """
+        # Check cache first
+        cached = self._bars_cache.get_bars(
+            symbol,
+            timeframe="Day",
+            lookback_days=self._lookback_days
+        )
+        if cached is not None:
+            return cached
+
+        # Fetch from API
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
 
@@ -383,13 +411,110 @@ class TechnicalScreener(BaseScreener):
             # BarSet uses dict-like [] access, not .get()
             try:
                 bars = bars_data[symbol]
-                return list(bars) if bars else None
+                bars_list = list(bars) if bars else None
+
+                # Cache the result
+                if bars_list:
+                    self._bars_cache.set_bars(
+                        symbol,
+                        bars_list,
+                        timeframe="Day",
+                        lookback_days=self._lookback_days
+                    )
+
+                return bars_list
             except (KeyError, TypeError):
                 return None
 
         except Exception as e:
             logger.warning(f"Failed to fetch bars for {symbol}: {e}")
             return None
+
+    async def _fetch_bars_batch(self, symbols: List[str]) -> Dict[str, Optional[list]]:
+        """Fetch historical bars for multiple symbols in batched API calls.
+
+        Alpaca supports up to 100 symbols per request. This method:
+        1. Checks cache for all symbols
+        2. Batches uncached symbols into groups of 100
+        3. Makes parallel batched API calls
+        4. Caches all results
+
+        Args:
+            symbols: List of stock symbols to fetch.
+
+        Returns:
+            Dictionary mapping symbol -> bars list (or None if failed).
+        """
+        # Check cache for all symbols
+        cached = self._bars_cache.get_bars_batch(
+            symbols,
+            timeframe="Day",
+            lookback_days=self._lookback_days
+        )
+
+        # Determine which symbols need fetching
+        uncached_symbols = [s for s in symbols if s not in cached]
+
+        if not uncached_symbols:
+            # All symbols were cached
+            logger.debug(f"All {len(symbols)} symbols served from cache")
+            return cached
+
+        logger.debug(
+            f"Cache hit: {len(cached)}/{len(symbols)}, "
+            f"fetching {len(uncached_symbols)} symbols from API"
+        )
+
+        # Fetch uncached symbols in batches of 100
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+
+        end = datetime.now()
+        start = end - timedelta(days=self._lookback_days)
+
+        batch_size = 100
+        fetched = {}
+
+        for i in range(0, len(uncached_symbols), batch_size):
+            batch = uncached_symbols[i:i + batch_size]
+
+            try:
+                request = StockBarsRequest(
+                    symbol_or_symbols=batch,  # Multiple symbols in one request
+                    timeframe=TimeFrame.Day,
+                    start=start,
+                    end=end,
+                )
+
+                bars_data = self._data_client.get_stock_bars(request)
+
+                # Extract bars for each symbol in batch
+                for symbol in batch:
+                    try:
+                        bars = bars_data[symbol]
+                        bars_list = list(bars) if bars else None
+                        fetched[symbol] = bars_list
+                    except (KeyError, TypeError):
+                        fetched[symbol] = None
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch batch {i//batch_size + 1}: {e}")
+                # Mark all symbols in failed batch as None
+                for symbol in batch:
+                    fetched[symbol] = None
+
+        # Cache all successfully fetched bars
+        successful = {s: b for s, b in fetched.items() if b is not None}
+        if successful:
+            self._bars_cache.set_bars_batch(
+                successful,
+                timeframe="Day",
+                lookback_days=self._lookback_days
+            )
+
+        # Combine cached and fetched results
+        result = {**cached, **fetched}
+        return result
 
     async def scan_for_oversold(
         self,
@@ -505,3 +630,20 @@ class TechnicalScreener(BaseScreener):
         )
 
         return high_volume[:max_results]
+
+    def clear_cache(self) -> None:
+        """Clear all caches including bars data cache."""
+        super().clear_cache()
+        self._bars_cache.clear()
+        logger.debug("Cleared technical screener caches")
+
+    def get_cache_stats(self) -> Dict:
+        """Get cache statistics.
+
+        Returns:
+            Dictionary with cache metrics.
+        """
+        return {
+            "bars_cache": self._bars_cache.get_stats(),
+            "results_cache_size": len(self._cache),
+        }

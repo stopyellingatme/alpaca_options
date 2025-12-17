@@ -1,5 +1,6 @@
 """Base screener classes and interfaces."""
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -243,12 +244,16 @@ class BaseScreener(ABC):
         self,
         symbols: list[str],
         max_results: Optional[int] = None,
+        use_parallel: bool = True,
+        max_concurrent: int = 50,
     ) -> ScanResults:
         """Scan multiple symbols and return results.
 
         Args:
             symbols: List of symbols to scan.
             max_results: Maximum number of passing results to return.
+            use_parallel: Whether to use parallel processing (default: True).
+            max_concurrent: Max concurrent symbol screenings (default: 50).
 
         Returns:
             ScanResults with all screening results.
@@ -256,29 +261,19 @@ class BaseScreener(ABC):
         import time
 
         start_time = time.time()
-        results: list[ScreenerResult] = []
 
         logger.info(
-            f"Starting {self.screener_type.value} scan of {len(symbols)} symbols"
+            f"Starting {self.screener_type.value} scan of {len(symbols)} symbols "
+            f"({'parallel' if use_parallel else 'sequential'} mode)"
         )
 
-        for symbol in symbols:
-            try:
-                # Check cache first
-                cached = self._get_cached(symbol)
-                if cached:
-                    results.append(cached)
-                    continue
+        # Prefetch data for all symbols (child classes can override)
+        await self._prefetch_data(symbols)
 
-                result = await self.screen_symbol(symbol)
-                self._cache_result(symbol, result)
-                results.append(result)
-
-            except Exception as e:
-                logger.warning(f"Error screening {symbol}: {e}")
-                results.append(
-                    ScreenerResult(symbol=symbol, passed=False, score=0.0)
-                )
+        if use_parallel:
+            results = await self._scan_parallel(symbols, max_concurrent)
+        else:
+            results = await self._scan_sequential(symbols)
 
         # Sort by score and limit results
         passed_results = [r for r in results if r.passed]
@@ -310,6 +305,87 @@ class BaseScreener(ABC):
         )
 
         return scan_results
+
+    async def _prefetch_data(self, symbols: list[str]) -> None:
+        """Prefetch data for multiple symbols (child classes can override).
+
+        This method is called before screening begins to allow child screeners
+        to batch-fetch data for all symbols at once, reducing API calls.
+
+        Args:
+            symbols: List of symbols to prefetch data for.
+        """
+        # Default implementation: no prefetching
+        pass
+
+    async def _scan_sequential(self, symbols: list[str]) -> list[ScreenerResult]:
+        """Scan symbols sequentially (original behavior).
+
+        Args:
+            symbols: List of symbols to scan.
+
+        Returns:
+            List of screening results.
+        """
+        results: list[ScreenerResult] = []
+
+        for symbol in symbols:
+            try:
+                # Check cache first
+                cached = self._get_cached(symbol)
+                if cached:
+                    results.append(cached)
+                    continue
+
+                result = await self.screen_symbol(symbol)
+                self._cache_result(symbol, result)
+                results.append(result)
+
+            except Exception as e:
+                logger.warning(f"Error screening {symbol}: {e}")
+                results.append(
+                    ScreenerResult(symbol=symbol, passed=False, score=0.0)
+                )
+
+        return results
+
+    async def _scan_parallel(
+        self,
+        symbols: list[str],
+        max_concurrent: int = 50
+    ) -> list[ScreenerResult]:
+        """Scan symbols in parallel with rate limiting.
+
+        Args:
+            symbols: List of symbols to scan.
+            max_concurrent: Maximum concurrent screenings.
+
+        Returns:
+            List of screening results.
+        """
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def screen_with_limit(symbol: str) -> ScreenerResult:
+            async with semaphore:
+                try:
+                    # Check cache first
+                    cached = self._get_cached(symbol)
+                    if cached:
+                        return cached
+
+                    result = await self.screen_symbol(symbol)
+                    self._cache_result(symbol, result)
+                    return result
+
+                except Exception as e:
+                    logger.warning(f"Error screening {symbol}: {e}")
+                    return ScreenerResult(symbol=symbol, passed=False, score=0.0)
+
+        # Process all symbols in parallel
+        tasks = [screen_with_limit(s) for s in symbols]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+
+        return list(results)
 
     def _get_cached(self, symbol: str) -> Optional[ScreenerResult]:
         """Get cached result if still valid."""
