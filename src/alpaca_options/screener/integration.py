@@ -52,6 +52,29 @@ class Opportunity:
     expires_at: Optional[datetime] = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __lt__(self, other: "Opportunity") -> bool:
+        """Compare opportunities for sorting in priority queue.
+
+        Higher priority and higher scores should come first.
+        """
+        if not isinstance(other, Opportunity):
+            return NotImplemented
+        # Primary: priority (higher priority = lower value after negation)
+        if self.priority.value != other.priority.value:
+            return self.priority.value > other.priority.value
+        # Secondary: score (higher score comes first)
+        if self.score != other.score:
+            return self.score > other.score
+        # Tertiary: discovery time (older first)
+        return self.discovered_at < other.discovered_at
+
+    def __eq__(self, other: object) -> bool:
+        """Check equality based on symbol and discovery time."""
+        if not isinstance(other, Opportunity):
+            return NotImplemented
+        return (self.symbol == other.symbol and
+                self.discovered_at == other.discovered_at)
+
     @property
     def is_expired(self) -> bool:
         """Check if opportunity has expired."""

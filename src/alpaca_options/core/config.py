@@ -169,6 +169,21 @@ class ScreenerConfig(BaseModel):
     criteria: ScreenerCriteriaConfig = Field(default_factory=ScreenerCriteriaConfig)
 
 
+class SECFilingsConfig(BaseModel):
+    """SEC filings analysis configuration."""
+
+    enabled: bool = True
+    cache_ttl_days: int = 7
+    high_risk_threshold: float = 7.0  # Skip if risk >= this (0-10 scale)
+    low_health_threshold: float = 5.0  # Skip if health < this (0-10 scale)
+    insider_sentiment_threshold: float = -0.3  # Skip if sentiment < this
+    bankruptcy_risk_threshold: float = 7.0  # Skip if bankruptcy risk >= this
+    skip_high_risk: bool = True
+    skip_negative_insiders: bool = True
+    skip_auditor_warnings: bool = True
+    skip_bankruptcy_risk: bool = True
+
+
 class AppConfig(BaseModel):
     """Application configuration."""
 
@@ -193,6 +208,7 @@ class Settings(BaseSettings):
     risk: RiskConfig = Field(default_factory=RiskConfig)
     strategies: dict[str, StrategyConfig] = Field(default_factory=dict)
     screener: ScreenerConfig = Field(default_factory=ScreenerConfig)
+    sec_filings: SECFilingsConfig = Field(default_factory=SECFilingsConfig)
     backtesting: BacktestConfig = Field(default_factory=BacktestConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

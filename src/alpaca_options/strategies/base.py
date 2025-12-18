@@ -205,6 +205,7 @@ class BaseStrategy(ABC):
         self._sec_health_threshold: float = 5.0  # Default: skip if health < 5.0
         self._insider_sentiment_threshold: float = -0.3  # Default: skip if sentiment < -0.3
         self._bankruptcy_risk_threshold: float = 7.0  # Default: skip if bankruptcy risk >= 7.0
+        self._screener_symbols: set[str] = set()  # Dynamically discovered symbols from screener
 
     @property
     @abstractmethod
@@ -321,6 +322,33 @@ class BaseStrategy(ABC):
             return True
 
         return False
+
+    def add_screener_symbol(self, symbol: str) -> None:
+        """Add a symbol discovered by the screener to the watchlist.
+
+        This allows strategies to trade on dynamically discovered opportunities
+        from the screener without requiring them to be in the configured underlyings list.
+
+        Args:
+            symbol: Stock ticker symbol discovered by the screener.
+        """
+        self._screener_symbols.add(symbol)
+
+    def remove_screener_symbol(self, symbol: str) -> None:
+        """Remove a screener-discovered symbol from the watchlist.
+
+        Args:
+            symbol: Stock ticker symbol to remove.
+        """
+        self._screener_symbols.discard(symbol)
+
+    def get_screener_symbols(self) -> set[str]:
+        """Get all screener-discovered symbols currently in the watchlist.
+
+        Returns:
+            Set of screener-discovered symbols.
+        """
+        return self._screener_symbols.copy()
 
     @abstractmethod
     async def initialize(self, config: dict[str, Any]) -> None:

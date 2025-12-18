@@ -166,7 +166,8 @@ class VerticalSpreadStrategy(BaseStrategy):
 
     async def on_market_data(self, data: MarketData) -> Optional[OptionSignal]:
         """Process market data update and cache for direction determination."""
-        if data.symbol not in self._underlyings:
+        # Accept symbols from configured underlyings OR screener discoveries
+        if data.symbol not in self._underlyings and data.symbol not in self._screener_symbols:
             return None
 
         # Cache market data for use in option chain processing
@@ -181,7 +182,8 @@ class VerticalSpreadStrategy(BaseStrategy):
 
     async def on_option_chain(self, chain: OptionChain) -> Optional[OptionSignal]:
         """Process options chain and potentially generate a spread signal."""
-        if chain.underlying not in self._underlyings:
+        # Accept symbols from configured underlyings OR screener discoveries
+        if chain.underlying not in self._underlyings and chain.underlying not in self._screener_symbols:
             return None
 
         # Check for earnings risk
