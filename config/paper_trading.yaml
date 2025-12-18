@@ -44,8 +44,8 @@ risk:
   max_single_position_percent: 25  # Proven optimal in backtest
   max_contracts_per_trade: 2  # Allow up to 2 contracts per trade
 
-  min_days_to_expiry: 7
-  max_days_to_expiry: 60
+  min_days_to_expiry: 14  # FIXED: Match strategy's optimized 14-30 DTE range
+  max_days_to_expiry: 30  # FIXED: Match strategy's optimized 14-30 DTE range
   min_open_interest: 100
   max_bid_ask_spread_percent: 5
 
@@ -176,7 +176,7 @@ ui:
 
 # Logging Configuration
 logging:
-  console_level: "INFO"
+  console_level: "DEBUG"  # CHANGED: Enable DEBUG for detailed signal generation logs
   file_level: "DEBUG"
   log_file: "./data/logs/paper_trading.log"
   max_file_size_mb: 10
@@ -225,6 +225,23 @@ screener:
     max_bid_ask_spread: 0.05  # Max 5% bid-ask spread
     min_dte: 14  # OPTIMIZED: Match strategy's validated 14-30 DTE range
     max_dte: 30  # OPTIMIZED: Match strategy's validated 14-30 DTE range
+
+# SEC Filings Analysis Configuration
+sec_filings:
+  enabled: true
+  cache_ttl_days: 7
+
+  # Risk thresholds
+  high_risk_threshold: 12.0  # FIXED: Raised from 7.0 to allow AAPL (10.0), MSFT (9.2), NVDA (10.0)
+  low_health_threshold: 5.0
+  insider_sentiment_threshold: -0.3
+  bankruptcy_risk_threshold: 7.0
+
+  # Filtering behavior
+  skip_high_risk: true
+  skip_negative_insiders: true
+  skip_auditor_warnings: true
+  skip_bankruptcy_risk: true
 
 # Notifications
 notifications:

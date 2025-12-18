@@ -169,7 +169,12 @@ class MarketDataManager:
             result: dict[str, list[Bar]] = {}
 
             for symbol in symbols:
-                symbol_bars = bars_data.get(symbol, [])
+                # Use [] access instead of .get() for BarSet objects
+                try:
+                    symbol_bars = bars_data[symbol]
+                except (KeyError, TypeError):
+                    symbol_bars = []
+
                 result[symbol] = [
                     Bar(
                         symbol=symbol,
@@ -240,7 +245,11 @@ class MarketDataManager:
 
         try:
             quotes = self._data_client.get_stock_latest_quote(request)
-            quote_data = quotes.get(symbol)
+            # Use [] access instead of .get() for quote objects
+            try:
+                quote_data = quotes[symbol]
+            except (KeyError, TypeError):
+                quote_data = None
 
             if quote_data:
                 quote = Quote(
@@ -276,7 +285,12 @@ class MarketDataManager:
             result = {}
 
             for symbol in symbols:
-                quote_data = quotes.get(symbol)
+                # Use [] access instead of .get() for quote objects
+                try:
+                    quote_data = quotes[symbol]
+                except (KeyError, TypeError):
+                    quote_data = None
+
                 if quote_data:
                     quote = Quote(
                         symbol=symbol,
@@ -308,7 +322,11 @@ class MarketDataManager:
 
         try:
             trades = self._data_client.get_stock_latest_trade(request)
-            trade_data = trades.get(symbol)
+            # Use [] access instead of .get() for trade objects
+            try:
+                trade_data = trades[symbol]
+            except (KeyError, TypeError):
+                trade_data = None
 
             if trade_data:
                 return Trade(
@@ -328,7 +346,7 @@ class MarketDataManager:
     def get_market_data(self, symbol: str) -> Optional[MarketData]:
         """Get market data snapshot for strategy consumption.
 
-        Combines latest quote with recent bar data.
+        Combines latest quote with recent bar data and calculates technical indicators.
 
         Args:
             symbol: The symbol to fetch.
@@ -336,8 +354,8 @@ class MarketDataManager:
         Returns:
             MarketData object for strategy processing.
         """
-        # Get latest bars for OHLC
-        bars = self.get_bars([symbol], timeframe="1d", limit=1)
+        # Get latest bars for OHLC and indicators (need at least 50 bars for SMA_50)
+        bars = self.get_bars([symbol], timeframe="1d", limit=60)
         symbol_bars = bars.get(symbol, [])
 
         if not symbol_bars:
@@ -345,6 +363,25 @@ class MarketDataManager:
 
         latest_bar = symbol_bars[-1]
         quote = self.get_latest_quote(symbol)
+        current_close = quote.mid if quote else latest_bar.close
+
+        # Calculate technical indicators
+        sma_20, sma_50, rsi_14 = None, None, None
+
+        if len(symbol_bars) >= 14:
+            # Calculate RSI (need at least 14 bars)
+            closes = [bar.close for bar in symbol_bars]
+            rsi_14 = self._calculate_rsi(closes, period=14)
+
+        if len(symbol_bars) >= 20:
+            # Calculate SMA_20
+            closes_20 = [bar.close for bar in symbol_bars[-20:]]
+            sma_20 = sum(closes_20) / len(closes_20)
+
+        if len(symbol_bars) >= 50:
+            # Calculate SMA_50
+            closes_50 = [bar.close for bar in symbol_bars[-50:]]
+            sma_50 = sum(closes_50) / len(closes_50)
 
         return MarketData(
             symbol=symbol,
@@ -352,10 +389,51 @@ class MarketDataManager:
             open=latest_bar.open,
             high=latest_bar.high,
             low=latest_bar.low,
-            close=quote.mid if quote else latest_bar.close,
+            close=current_close,
             volume=latest_bar.volume,
             vwap=latest_bar.vwap,
+            sma_20=sma_20,
+            sma_50=sma_50,
+            rsi_14=rsi_14,
         )
+
+    def _calculate_rsi(self, prices: list[float], period: int = 14) -> Optional[float]:
+        """Calculate RSI (Relative Strength Index).
+
+        Args:
+            prices: List of closing prices.
+            period: RSI period (default 14).
+
+        Returns:
+            RSI value (0-100) or None if insufficient data.
+        """
+        if len(prices) < period + 1:
+            return None
+
+        # Calculate price changes
+        deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+
+        # Separate gains and losses
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+
+        # Calculate initial average gain/loss
+        avg_gain = sum(gains[:period]) / period
+        avg_loss = sum(losses[:period]) / period
+
+        # Smooth with remaining data
+        for i in range(period, len(gains)):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+        # Calculate RSI
+        if avg_loss == 0:
+            return 100.0
+
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+        return rsi
 
     # Streaming methods
 

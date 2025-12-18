@@ -144,7 +144,7 @@ class OptionsDataManager:
                     "underlying": c.underlying_symbol,
                     "option_type": c.type.value if hasattr(c.type, 'value') else str(c.type) if c.type else "unknown",
                     "strike": float(c.strike_price),
-                    "expiration": c.expiration_date,
+                    "expiration": datetime.combine(c.expiration_date, datetime.min.time()) if hasattr(c.expiration_date, 'year') else c.expiration_date,
                     "style": c.style.value if hasattr(c.style, 'value') else str(c.style) if c.style else "american",
                     "root_symbol": c.root_symbol,
                     "status": c.status.value if hasattr(c.status, 'value') else str(c.status) if c.status else "active",

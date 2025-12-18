@@ -309,7 +309,15 @@ class TradingEngine:
 
                     # Inject SEC filings analyzer into strategy
                     instance.set_sec_filings_analyzer(self._sec_analyzer)
-                    logger.info(f"Initialized strategy: {name} (SEC analyzer injected)")
+
+                    # Apply SEC risk thresholds from config
+                    instance.set_sec_risk_threshold(self.settings.sec_filings.high_risk_threshold)
+                    instance.set_sec_health_threshold(self.settings.sec_filings.low_health_threshold)
+
+                    logger.info(
+                        f"Initialized strategy: {name} "
+                        f"(SEC analyzer injected, risk threshold: {self.settings.sec_filings.high_risk_threshold})"
+                    )
 
                     await self.event_bus.publish(
                         Event(
@@ -400,16 +408,40 @@ class TradingEngine:
         """Loop that feeds data to strategies and collects signals."""
         while self._running:
             try:
+                logger.info("=== Strategy loop iteration starting ===")
                 for name, strategy in self._active_strategies.items():
                     strategy_config = self.settings.strategies.get(name)
                     if not strategy_config:
+                        logger.info(f"No config found for strategy {name}, skipping")
                         continue
 
-                    underlyings = strategy_config.config.get("underlyings", [])
+                    # Get both configured underlyings AND screener-discovered symbols
+                    configured_underlyings = strategy_config.config.get("underlyings", [])
+                    screener_symbols = strategy.get_screener_symbols()
+                    underlyings = list(set(configured_underlyings) | screener_symbols)
+
+                    logger.info(
+                        f"[{name}] Processing {len(underlyings)} underlyings: "
+                        f"configured={configured_underlyings}, screener={list(screener_symbols)}"
+                    )
 
                     for underlying in underlyings:
                         try:
-                            # Get option chain for the underlying
+                            logger.info(f"[{name}] [{underlying}] Fetching market data...")
+                            # First, get and feed market data (for RSI/indicators)
+                            market_data = await self.data_manager.get_market_data(underlying)
+                            if market_data:
+                                logger.info(f"[{name}] [{underlying}] Market data received: close={market_data.close}")
+                                await strategy.on_market_data(market_data)
+                            else:
+                                logger.info(f"[{name}] [{underlying}] No market data available")
+                                continue
+
+                            # Then get option chain
+                            logger.info(
+                                f"[{name}] [{underlying}] Fetching option chain "
+                                f"(DTE: {self.settings.risk.min_days_to_expiry}-{self.settings.risk.max_days_to_expiry})..."
+                            )
                             chain = await self.data_manager.get_option_chain(
                                 underlying,
                                 min_dte=self.settings.risk.min_days_to_expiry,
@@ -417,15 +449,26 @@ class TradingEngine:
                             )
 
                             if chain:
-                                # Let strategy process the chain
+                                logger.info(f"[{name}] [{underlying}] Option chain received: {len(chain.contracts)} contracts")
+                                # Let strategy process the chain (will use cached market data for direction)
                                 signal = await strategy.on_option_chain(chain)
 
-                                if signal and strategy.validate_signal(signal):
-                                    await self.submit_signal(signal)
+                                if signal:
+                                    logger.info(f"[{name}] [{underlying}] Signal generated: {signal.signal_type.value}")
+                                    if strategy.validate_signal(signal):
+                                        logger.info(f"[{name}] [{underlying}] Signal validated, submitting...")
+                                        await self.submit_signal(signal)
+                                    else:
+                                        logger.warning(f"[{name}] [{underlying}] Signal validation failed")
+                                else:
+                                    logger.info(f"[{name}] [{underlying}] No signal generated")
+                            else:
+                                logger.info(f"[{name}] [{underlying}] No option chain available")
 
                         except Exception as e:
                             logger.error(
-                                f"Error in strategy {name} for {underlying}: {e}"
+                                f"Error in strategy {name} for {underlying}: {e}",
+                                exc_info=True
                             )
 
                 # Wait before next strategy iteration
@@ -780,10 +823,11 @@ class TradingEngine:
         """
         risk = self.settings.risk
 
-        # Check max positions
+        # Check max concurrent positions
         current_positions = len(self._positions)
-        if current_positions >= risk.max_contracts_per_trade:
-            logger.warning(f"Max positions ({risk.max_contracts_per_trade}) reached")
+        max_concurrent = self.settings.trading.max_concurrent_positions
+        if current_positions >= max_concurrent:
+            logger.warning(f"Max concurrent positions ({max_concurrent}) reached")
             return False
 
         # Check confidence threshold
@@ -847,38 +891,54 @@ class TradingEngine:
             # LIVE MODE: Submit actual orders
             order_type = self.settings.trading.default_order_type
 
-            results = await self.trading_manager.submit_signal(
+            # Extract net price from signal metadata for limit orders
+            net_price = None
+            if order_type.lower() == "limit":
+                # For credit spreads, potential_profit is the credit received
+                # For debit spreads, potential_profit is the max profit (not the cost)
+                # We need the actual premium (credit/debit)
+                if signal.metadata.get("is_credit_spread", False):
+                    net_price = signal.metadata.get("potential_profit", 0) / 100.0  # Convert to per-contract price
+                else:
+                    # For debit spreads, use the cost
+                    net_price = signal.metadata.get("cost", 0) / 100.0  # Convert to per-contract price
+
+                # Round to 2 decimal places as required by Alpaca
+                net_price = round(net_price, 2)
+
+            result = await self.trading_manager.submit_signal(
                 signal=signal,
                 order_type=order_type,
+                net_price=net_price,
                 time_in_force="day",
             )
 
-            for result in results:
-                logger.info(
-                    f"Order submitted: {result.order_id} - "
-                    f"{result.side} {result.quantity} {result.symbol} - "
-                    f"Status: {result.status.value}"
-                )
+            # Handle single OrderResult (not a list)
+            logger.info(
+                f"Order submitted: {result.order_id} - "
+                f"{result.side} {result.quantity} {result.symbol} - "
+                f"Status: {result.status.value}"
+            )
 
-                await self.event_bus.publish(
-                    Event(
-                        event_type=EventType.ORDER_SUBMITTED,
-                        data={
-                            "order_id": result.order_id,
-                            "symbol": result.symbol,
-                            "side": result.side,
-                            "quantity": result.quantity,
-                            "status": result.status.value,
-                            "strategy": signal.strategy_name,
-                        },
-                        source="TradingEngine",
-                    )
+            await self.event_bus.publish(
+                Event(
+                    event_type=EventType.ORDER_SUBMITTED,
+                    data={
+                        "order_id": result.order_id,
+                        "symbol": result.symbol,
+                        "side": result.side,
+                        "quantity": result.quantity,
+                        "status": result.status.value,
+                        "strategy": signal.strategy_name,
+                    },
+                    source="TradingEngine",
                 )
+            )
 
             # Register the position for management (profit targets, stop losses, DTE exits)
             # This enables automatic position monitoring and exit management
-            if results:
-                self._register_managed_position(signal, results)
+            if result:
+                self._register_managed_position(signal, [result])
 
         except Exception as e:
             logger.error(f"Failed to execute signal: {e}")
@@ -1207,6 +1267,10 @@ class TradingEngine:
         """
         for name, strategy in self._active_strategies.items():
             try:
+                # Add symbol to strategy's screener watchlist
+                strategy.add_screener_symbol(symbol)
+                logger.info(f"Added {symbol} to {name} strategy watchlist (screener discovery)")
+
                 # Get option chain for the symbol
                 chain = await self.data_manager.get_option_chain(
                     symbol,
